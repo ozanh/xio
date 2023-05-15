@@ -119,7 +119,6 @@ func BufPipe(blockSize int, storageSize int64, storager Storager) (*BufPipeReade
 		buf:       bytes.NewBuffer(nil),
 		storSize:  storageSize,
 		blockSize: int64(blockSize),
-		wrblock:   aBlock{done: make(chan struct{})},
 	}
 	return &BufPipeReader{p: bp}, &BufPipeWriter{p: bp}
 }
