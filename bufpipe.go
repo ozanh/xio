@@ -65,6 +65,7 @@ type Storager interface {
 
 // aBlock represents a block of data in the storage.
 type aBlock struct {
+	done   chan struct{}
 	offset int64
 	size   int64
 }
@@ -77,8 +78,6 @@ type bufPipe struct {
 	blockch chan aBlock
 	// donech channel is closed when the reader or writer is closed.
 	donech chan struct{}
-	// rewindch channel is used to signal that the reader has rewound the storage to the beginning.
-	rewindch chan struct{}
 
 	rmu     sync.Mutex // Guards buf
 	buf     *bytes.Buffer
@@ -117,10 +116,10 @@ func BufPipe(blockSize int, storageSize int64, storager Storager) (*BufPipeReade
 		stor:      storager,
 		blockch:   make(chan aBlock, blockChCap),
 		donech:    make(chan struct{}),
-		rewindch:  make(chan struct{}, 1),
 		buf:       bytes.NewBuffer(nil),
 		storSize:  storageSize,
 		blockSize: int64(blockSize),
+		wrblock:   aBlock{done: make(chan struct{})},
 	}
 	return &BufPipeReader{p: bp}, &BufPipeWriter{p: bp}
 }
@@ -139,6 +138,9 @@ func (bp *bufPipe) Read(p []byte) (n int, err error) {
 func (bp *bufPipe) slowRead(p []byte) (n int, err error) {
 	block := <-bp.blockch
 	if block.size <= 0 {
+		if block.done != nil {
+			close(block.done)
+		}
 		if bp.buf.Cap() > 0 {
 			bp.buf = &bytes.Buffer{} // remove reference to let GC collect the buffer sooner.
 		}
@@ -154,16 +156,13 @@ func (bp *bufPipe) slowRead(p []byte) (n int, err error) {
 	src := io.NewSectionReader(bp.stor, block.offset, block.size)
 	bp.buf.Reset()
 	_, err = bp.buf.ReadFrom(src)
+	if block.done != nil {
+		close(block.done)
+	}
 	if err != nil {
 		_ = bp.closeRead(err)
 		bp.buf.Reset()
 		return 0, err
-	}
-	if block.offset == 0 {
-		select {
-		case bp.rewindch <- struct{}{}:
-		default:
-		}
 	}
 	return bp.buf.Read(p)
 }
@@ -222,19 +221,26 @@ func (bp *bufPipe) sendBlock(noclosing bool) error {
 	}
 
 	prevBlock := bp.wrblock
+	newblock := aBlock{offset: prevBlock.offset + prevBlock.size}
+	if newblock.offset >= bp.storSize {
+		if prevBlock.done == nil {
+			prevBlock.done = make(chan struct{})
+		}
+		newblock.offset = 0
+	}
 	select {
 	case <-bp.donech:
 		return bp.writeCloseError()
 	case bp.blockch <- prevBlock:
 	}
 
-	bp.wrblock = aBlock{offset: prevBlock.offset + prevBlock.size}
-	if bp.wrblock.offset >= bp.storSize {
+	bp.wrblock = newblock
+	if prevBlock.done != nil {
 		if noclosing {
 			select {
 			case <-bp.donech:
 				return bp.writeCloseError()
-			case <-bp.rewindch:
+			case <-prevBlock.done:
 			}
 			bp.wrblock.offset = 0
 		}

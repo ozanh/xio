@@ -194,6 +194,13 @@ func TestBufPipe(t *testing.T) {
 			randFileSize: 20*1000*1000 + 1,
 			slowReader:   true,
 		},
+		{
+			name:         "blockSize=4MB storsize=13MB randFileSize=20MB+1",
+			blockSize:    4 * 1000 * 1000,
+			storsize:     13 * 1000 * 1000,
+			randFileSize: 20*1000*1000 + 1,
+			slowReader:   true,
+		},
 	}
 
 	for _, tc := range testCases {
@@ -222,6 +229,7 @@ func testBufPipeHash(t *testing.T, tc testCase) {
 	storage, err := os.CreateTemp(tempdir, "storage")
 	require.NoError(t, err)
 	defer storage.Close()
+	//storage := xio.NewByteSliceReadWriterAt(nil, true)
 
 	err = storage.Truncate(tc.storsize)
 	require.NoError(t, err)
