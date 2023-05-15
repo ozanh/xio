@@ -65,9 +65,19 @@ type Storager interface {
 
 // aBlock represents a block of data in the storage.
 type aBlock struct {
-	done   chan struct{}
-	offset int64
-	size   int64
+	done        chan struct{}
+	startOffset int64
+	size        int64
+}
+
+func (a *aBlock) endOffset() int64 {
+	return a.startOffset + a.size
+}
+
+func (a *aBlock) close() {
+	if a.done != nil {
+		close(a.done)
+	}
 }
 
 // bufPipe is a buffered pipe that uses a storage as a backing store.
@@ -124,7 +134,7 @@ func BufPipe(blockSize int, storageSize int64, storager Storager) (*BufPipeReade
 }
 
 // Read implements io.Reader. BufPipeReader should call this method.
-func (bp *bufPipe) Read(p []byte) (n int, err error) {
+func (bp *bufPipe) Read(p []byte) (int, error) {
 	bp.rmu.Lock()
 	defer bp.rmu.Unlock()
 
@@ -134,36 +144,47 @@ func (bp *bufPipe) Read(p []byte) (n int, err error) {
 	return bp.slowRead(p)
 }
 
-func (bp *bufPipe) slowRead(p []byte) (n int, err error) {
+func (bp *bufPipe) slowRead(p []byte) (int, error) {
 	block := <-bp.blockch
-	if block.size <= 0 {
-		if block.done != nil {
-			close(block.done)
+	if block.size > 0 {
+		n, err := bp.readAndFill(block.startOffset, block.size, p)
+		block.close()
+		if err != nil {
+			_ = bp.closeRead(err)
 		}
-		if bp.buf.Cap() > 0 {
-			bp.buf = &bytes.Buffer{} // remove reference to let GC collect the buffer sooner.
-		}
-		var err error
-		if e := bp.readCloseError(); e != nil {
-			err = e
-		} else {
-			err = io.EOF
-		}
-		return 0, err
+		return n, err
 	}
 
-	src := io.NewSectionReader(bp.stor, block.offset, block.size)
+	block.close()
+	if bp.buf.Cap() > 0 {
+		bp.buf = &bytes.Buffer{} // remove reference to let GC collect the buffer sooner.
+	}
+	var err error
+	if e := bp.readCloseError(); e != nil {
+		err = e
+	} else {
+		err = io.EOF
+	}
+	return 0, err
+}
+
+func (bp *bufPipe) readAndFill(offset, size int64, p []byte) (int, error) {
 	bp.buf.Reset()
-	_, err = bp.buf.ReadFrom(src)
-	if block.done != nil {
-		close(block.done)
+
+	n := len(p)
+	if int64(n) > size {
+		n = int(size)
 	}
+	n, err := bp.stor.ReadAt(p[:n], offset)
 	if err != nil {
-		_ = bp.closeRead(err)
-		bp.buf.Reset()
-		return 0, err
+		return n, err
 	}
-	return bp.buf.Read(p)
+	size -= int64(n)
+	if size > 0 {
+		src := io.NewSectionReader(bp.stor, offset+int64(n), size)
+		_, err = bp.buf.ReadFrom(src)
+	}
+	return n, err
 }
 
 // Write implements io.Writer. BufPipeWriter should call this method.
@@ -196,18 +217,20 @@ func (bp *bufPipe) Write(p []byte) (n int, err error) {
 	return
 }
 
-func (bp *bufPipe) writeBlock(p []byte) (n int, err error) {
+func (bp *bufPipe) writeBlock(p []byte) (int, error) {
 	if err := bp.sendBlock(true); err != nil {
 		return 0, err
 	}
 
-	if int64(len(p)) > bp.blockSize {
-		p = p[:bp.blockSize]
+	wsize := int64(len(p))
+	if wsize > bp.blockSize {
+		wsize = int64(bp.blockSize)
 	}
-	if v := bp.wrblock.offset + bp.wrblock.size; v+int64(len(p)) > bp.storSize {
-		p = p[:bp.storSize-v]
+	offset := bp.wrblock.endOffset()
+	if offset+wsize > bp.storSize {
+		wsize = bp.storSize - offset
 	}
-	n, err = bp.writeAtFull(p, bp.wrblock.offset+bp.wrblock.size)
+	n, err := bp.stor.WriteAt(p[:wsize], offset)
 	bp.wrblock.size += int64(n)
 	return n, err
 }
@@ -215,17 +238,17 @@ func (bp *bufPipe) writeBlock(p []byte) (n int, err error) {
 func (bp *bufPipe) sendBlock(noclosing bool) error {
 	if noclosing &&
 		bp.wrblock.size < bp.blockSize &&
-		bp.wrblock.offset+bp.wrblock.size < bp.storSize {
+		bp.wrblock.endOffset() < bp.storSize {
 		return nil
 	}
 
 	prevBlock := bp.wrblock
-	newblock := aBlock{offset: prevBlock.offset + prevBlock.size}
-	if newblock.offset >= bp.storSize {
+	newblock := aBlock{startOffset: prevBlock.endOffset()}
+	if newblock.startOffset >= bp.storSize {
 		if prevBlock.done == nil {
 			prevBlock.done = make(chan struct{})
 		}
-		newblock.offset = 0
+		newblock.startOffset = 0
 	}
 	select {
 	case <-bp.donech:
@@ -241,24 +264,9 @@ func (bp *bufPipe) sendBlock(noclosing bool) error {
 				return bp.writeCloseError()
 			case <-prevBlock.done:
 			}
-			bp.wrblock.offset = 0
 		}
 	}
 	return nil
-}
-
-func (bp *bufPipe) writeAtFull(p []byte, offset int64) (n int, err error) {
-	var nw int
-	for len(p) > 0 {
-		nw, err = bp.stor.WriteAt(p, offset)
-		n += nw
-		if err != nil {
-			return
-		}
-		p = p[nw:]
-		offset += int64(nw)
-	}
-	return
 }
 
 func (bp *bufPipe) closeRead(err error) error {
