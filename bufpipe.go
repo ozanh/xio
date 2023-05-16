@@ -10,6 +10,8 @@ const DefaultBufPipeBlockSize = 1 * 1024 * 1024
 
 const MaxBufPipeQueueCapacity = 2048
 
+const debug = false
+
 // BufPipeReader is the read half of a buffered pipe.
 type BufPipeReader struct {
 	p *bufPipe
@@ -65,41 +67,35 @@ type Storager interface {
 
 // aBlock represents a block of data in the storage.
 type aBlock struct {
-	done        chan struct{}
 	startOffset int64
-	size        int64
+	written     int64
 }
 
 func (a *aBlock) endOffset() int64 {
-	return a.startOffset + a.size
-}
-
-func (a *aBlock) close() {
-	if a.done != nil {
-		close(a.done)
-	}
+	return a.startOffset + a.written
 }
 
 // bufPipe is a buffered pipe that uses a storage as a backing store.
 type bufPipe struct {
 	stor Storager
-	// blockch channel holds blocks available for reading. It is critical that this channel is buffered and cap is
-	// multiple of the block size. It is closed when the writer is closed.
-	blockch chan aBlock
-	// donech channel is closed when the reader or writer is closed.
-	donech chan struct{}
+	// rdQueue channel holds blocks available for reading. It is closed when the writer is closed.
+	rdQueue chan aBlock
+	// wrQueue channel holds offsets available for writing. It is not closed.
+	wrQueue chan int64
+	// done channel is closed when the reader or writer is closed.
+	done chan struct{}
 
 	rmu     sync.Mutex // Guards buf
 	buf     *bytes.Buffer
-	wmu     sync.Mutex // Guards wrblock, blockch, and serializes writes
-	wrblock aBlock
+	wmu     sync.Mutex // Guards wrblock, rdQueue close, and serializes writes
+	wrblock aBlock     // The block currently being written
 
-	rerr      onceError
-	werr      onceError
-	storSize  int64
-	blockSize int64
-	doneOnce  sync.Once // Protects closing donech
-	blockOnce sync.Once // Protects closing blockch
+	rerr        onceError
+	werr        onceError
+	storSize    int64
+	blockSize   int64
+	doneOnce    sync.Once // Protects closing done
+	rdQueueOnce sync.Once // Protects closing rdqueue
 }
 
 // BufPipe creates a buffered pipe with a given block size and storage size.
@@ -107,28 +103,38 @@ type bufPipe struct {
 // The storageSize should be a multiple of the block size.
 // If storageSize is not positive, it panics.
 func BufPipe(blockSize int, storageSize int64, storager Storager) (*BufPipeReader, *BufPipeWriter) {
-	if blockSize <= 0 {
-		blockSize = DefaultBufPipeBlockSize
+	bsize := int64(blockSize)
+	if bsize <= 0 {
+		bsize = DefaultBufPipeBlockSize
 	} else if blockSize < bytes.MinRead {
-		blockSize = bytes.MinRead
+		bsize = bytes.MinRead
 	}
 	if storageSize <= 0 {
 		panic("storageSize must be positive")
 	}
-	if storageSize < int64(blockSize) {
-		blockSize = int(storageSize)
+	if storageSize < bsize {
+		bsize = storageSize
 	}
-	blockChCap := storageSize / int64(blockSize)
-	if blockChCap > MaxBufPipeQueueCapacity {
-		blockChCap = MaxBufPipeQueueCapacity
+	qcap := storageSize / bsize
+	if storageSize%bsize != 0 {
+		qcap++
 	}
+	wrQueue := make(chan int64, qcap)
+	if qcap > MaxBufPipeQueueCapacity {
+		qcap = MaxBufPipeQueueCapacity
+	}
+	for offset := bsize; offset < storageSize; offset += bsize {
+		wrQueue <- offset
+	}
+
 	bp := &bufPipe{
 		stor:      storager,
-		blockch:   make(chan aBlock, blockChCap),
-		donech:    make(chan struct{}),
+		rdQueue:   make(chan aBlock, qcap),
+		wrQueue:   wrQueue,
+		done:      make(chan struct{}),
 		buf:       bytes.NewBuffer(nil),
 		storSize:  storageSize,
-		blockSize: int64(blockSize),
+		blockSize: bsize,
 	}
 	return &BufPipeReader{p: bp}, &BufPipeWriter{p: bp}
 }
@@ -145,17 +151,25 @@ func (bp *bufPipe) Read(p []byte) (int, error) {
 }
 
 func (bp *bufPipe) slowRead(p []byte) (int, error) {
-	block := <-bp.blockch
-	if block.size > 0 {
-		n, err := bp.readAndFill(block.startOffset, block.size, p)
-		block.close()
+	block := <-bp.rdQueue
+	if block.written > 0 {
+		if debug {
+			println("reading block:", block.startOffset)
+		}
+		n, err := bp.readAndFill(block.startOffset, block.written, p)
+		if debug {
+			println("read block:", block.startOffset, "n:", n)
+		}
 		if err != nil {
 			_ = bp.closeRead(err)
+		} else {
+			bp.enqueueRead(block.startOffset)
 		}
 		return n, err
 	}
-
-	block.close()
+	if debug {
+		println("read empty block:", block.startOffset)
+	}
 	if bp.buf.Cap() > 0 {
 		bp.buf = &bytes.Buffer{} // remove reference to let GC collect the buffer sooner.
 	}
@@ -166,6 +180,16 @@ func (bp *bufPipe) slowRead(p []byte) (int, error) {
 		err = io.EOF
 	}
 	return 0, err
+}
+
+func (bp *bufPipe) enqueueRead(offset int64) {
+	select {
+	case bp.wrQueue <- offset:
+		if debug {
+			println("enqueued read block:", offset)
+		}
+	case <-bp.done:
+	}
 }
 
 func (bp *bufPipe) readAndFill(offset, size int64, p []byte) (int, error) {
@@ -190,12 +214,15 @@ func (bp *bufPipe) readAndFill(offset, size int64, p []byte) (int, error) {
 // Write implements io.Writer. BufPipeWriter should call this method.
 func (bp *bufPipe) Write(p []byte) (n int, err error) {
 	select {
-	case <-bp.donech:
+	case <-bp.done:
 		return 0, bp.writeCloseError()
 	default:
 	}
 	bp.wmu.Lock()
 	defer bp.wmu.Unlock()
+	if debug {
+		println("current write block:", bp.wrblock.startOffset, "written:", bp.wrblock.written)
+	}
 
 	for once := true; once || len(p) > 0; once = false {
 		var nw int
@@ -206,7 +233,7 @@ func (bp *bufPipe) Write(p []byte) (n int, err error) {
 			return
 		}
 		select {
-		case <-bp.donech:
+		case <-bp.done:
 			err = bp.writeCloseError()
 			return
 		default:
@@ -223,48 +250,44 @@ func (bp *bufPipe) writeBlock(p []byte) (int, error) {
 	}
 
 	wsize := int64(len(p))
-	if wsize > bp.blockSize {
-		wsize = int64(bp.blockSize)
+	if rem := (bp.blockSize - bp.wrblock.written); wsize > rem {
+		wsize = rem
 	}
 	offset := bp.wrblock.endOffset()
 	if offset+wsize > bp.storSize {
 		wsize = bp.storSize - offset
 	}
 	n, err := bp.stor.WriteAt(p[:wsize], offset)
-	bp.wrblock.size += int64(n)
+	bp.wrblock.written += int64(n)
 	return n, err
 }
 
 func (bp *bufPipe) sendBlock(noclosing bool) error {
 	if noclosing &&
-		bp.wrblock.size < bp.blockSize &&
+		bp.wrblock.written < bp.blockSize &&
 		bp.wrblock.endOffset() < bp.storSize {
 		return nil
 	}
-
-	prevBlock := bp.wrblock
-	newblock := aBlock{startOffset: prevBlock.endOffset()}
-	if newblock.startOffset >= bp.storSize {
-		if prevBlock.done == nil {
-			prevBlock.done = make(chan struct{})
-		}
-		newblock.startOffset = 0
+	if debug {
+		println("send block:", bp.wrblock.startOffset, "written:", bp.wrblock.written)
 	}
 	select {
-	case <-bp.donech:
+	case <-bp.done:
 		return bp.writeCloseError()
-	case bp.blockch <- prevBlock:
+	case bp.rdQueue <- bp.wrblock:
+	}
+	if !noclosing {
+		return nil
 	}
 
-	bp.wrblock = newblock
-	if prevBlock.done != nil {
-		if noclosing {
-			select {
-			case <-bp.donech:
-				return bp.writeCloseError()
-			case <-prevBlock.done:
-			}
-		}
+	select {
+	case <-bp.done:
+		return bp.writeCloseError()
+	case offset := <-bp.wrQueue:
+		bp.wrblock = aBlock{startOffset: offset}
+	}
+	if debug {
+		println("new write block:", bp.wrblock.startOffset, "written:", bp.wrblock.written)
 	}
 	return nil
 }
@@ -276,11 +299,11 @@ func (bp *bufPipe) closeRead(err error) error {
 		err = io.ErrClosedPipe
 	}
 	bp.rerr.Store(err)
-	bp.doneOnce.Do(func() { close(bp.donech) })
+	bp.doneOnce.Do(func() { close(bp.done) })
 	if iserr {
 		bp.wmu.Lock()
 		defer bp.wmu.Unlock()
-		bp.blockOnce.Do(func() { close(bp.blockch) })
+		bp.rdQueueOnce.Do(func() { close(bp.rdQueue) })
 	}
 	return nil
 }
@@ -303,12 +326,12 @@ func (bp *bufPipe) closeWriteErr(err error, locked bool) error {
 		err = io.EOF
 	}
 	bp.werr.Store(err)
-	bp.doneOnce.Do(func() { close(bp.donech) })
+	bp.doneOnce.Do(func() { close(bp.done) })
 	if !locked {
 		bp.wmu.Lock()
 		defer bp.wmu.Unlock()
 	}
-	bp.blockOnce.Do(func() { close(bp.blockch) })
+	bp.rdQueueOnce.Do(func() { close(bp.rdQueue) })
 	return nil
 }
 

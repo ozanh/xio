@@ -272,13 +272,13 @@ func testBufPipeHash(t *testing.T, tc testCase) {
 	require.NoError(t, pr.Close())
 	wg.Wait()
 
-	require.Equal(t, wrs256.Sum(nil), rds256.Sum(nil))
-	require.Equal(t, wrmd5.Sum(nil), rdmd5.Sum(nil))
-
 	// test overflow
 	info, err := storage.Stat()
 	require.NoError(t, err)
 	require.Equal(t, tc.storsize, info.Size())
+
+	require.Equal(t, wrs256.Sum(nil), rds256.Sum(nil))
+	require.Equal(t, wrmd5.Sum(nil), rdmd5.Sum(nil))
 }
 
 type slowReader struct {
