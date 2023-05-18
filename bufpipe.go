@@ -6,21 +6,17 @@ import (
 	"sync"
 )
 
-const DefaultBufPipeBlockSize = 1 * 1024 * 1024
-
-const MaxBufPipeQueueCapacity = 2048
-
-const debug = false
+const maxBufPipeReadQueueCap = 2048
 
 // BufPipeReader is the read half of a buffered pipe.
 type BufPipeReader struct {
-	p *bufPipe
+	bp *bufPipe
 }
 
 // Read implements the io.Reader interface: it reads data from the buffered pipe, blocking until a writer arrives or
 // the write end is closed.
 func (br *BufPipeReader) Read(p []byte) (n int, err error) {
-	return br.p.Read(p)
+	return br.bp.Read(p)
 }
 
 // Close closes the reader; subsequent writes to the write half of the buffered pipe will return the error
@@ -31,17 +27,17 @@ func (br *BufPipeReader) Close() error {
 
 // CloseWithError closes the reader; subsequent writes to the write half of the buffered pipe will return the error err.
 func (br *BufPipeReader) CloseWithError(err error) error {
-	return br.p.closeRead(err)
+	return br.bp.closeRead(err)
 }
 
 // BufPipeWriter is the write half of a buffered pipe.
 type BufPipeWriter struct {
-	p *bufPipe
+	bp *bufPipe
 }
 
 // Write implements the io.Writer interface: it writes data to the underlying buffered storage.
 func (bw *BufPipeWriter) Write(p []byte) (n int, err error) {
-	return bw.p.Write(p)
+	return bw.bp.Write(p)
 }
 
 // Close closes the writer; subsequent reads from the read half of the buffered pipe will return no bytes and EOF until
@@ -54,15 +50,9 @@ func (bw *BufPipeWriter) Close() error {
 // the error err, or EOF.
 func (bw *BufPipeWriter) CloseWithError(err error) error {
 	if err == nil {
-		return bw.p.closeWrite()
+		return bw.bp.closeWrite()
 	}
-	return bw.p.closeWriteErr(err, false)
-}
-
-// Storager is the interface that wraps the basic ReadAt and WriteAt methods.
-type Storager interface {
-	io.ReaderAt
-	io.WriterAt
+	return bw.bp.closeWriteErr(err, false)
 }
 
 // aBlock represents a block of data in the storage.
@@ -77,7 +67,7 @@ func (a *aBlock) endOffset() int64 {
 
 // bufPipe is a buffered pipe that uses a storage as a backing store.
 type bufPipe struct {
-	stor Storager
+	stor Storage
 	// rdQueue channel holds blocks available for reading. It is closed when the writer is closed.
 	rdQueue chan aBlock
 	// wrQueue channel holds offsets available for writing. It is not closed.
@@ -102,15 +92,12 @@ type bufPipe struct {
 // If blockSize is zero, a default value is used. If blockSize is less than bytes.MinRead, it is set to bytes.MinRead.
 // The storageSize should be a multiple of the block size.
 // If storageSize is not positive, it panics.
-func BufPipe(blockSize int, storageSize int64, storager Storager) (*BufPipeReader, *BufPipeWriter) {
+func BufPipe(blockSize int, storageSize int64, storager Storage) (*BufPipeReader, *BufPipeWriter) {
 	bsize := int64(blockSize)
 	if bsize <= 0 {
-		bsize = DefaultBufPipeBlockSize
+		bsize = DefaultBlockSize
 	} else if blockSize < bytes.MinRead {
 		bsize = bytes.MinRead
-	}
-	if storageSize <= 0 {
-		panic("storageSize must be positive")
 	}
 	if storageSize < bsize {
 		bsize = storageSize
@@ -120,8 +107,8 @@ func BufPipe(blockSize int, storageSize int64, storager Storager) (*BufPipeReade
 		qcap++
 	}
 	wrQueue := make(chan int64, qcap)
-	if qcap > MaxBufPipeQueueCapacity {
-		qcap = MaxBufPipeQueueCapacity
+	if qcap > maxBufPipeReadQueueCap {
+		qcap = maxBufPipeReadQueueCap
 	}
 	for offset := bsize; offset < storageSize; offset += bsize {
 		wrQueue <- offset
@@ -136,7 +123,7 @@ func BufPipe(blockSize int, storageSize int64, storager Storager) (*BufPipeReade
 		storSize:  storageSize,
 		blockSize: bsize,
 	}
-	return &BufPipeReader{p: bp}, &BufPipeWriter{p: bp}
+	return &BufPipeReader{bp: bp}, &BufPipeWriter{bp: bp}
 }
 
 // Read implements io.Reader. BufPipeReader should call this method.
