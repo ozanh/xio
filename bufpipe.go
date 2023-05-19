@@ -324,8 +324,11 @@ func (bp *bufPipe) closeWriteErr(err error, locked bool) error {
 
 func (bp *bufPipe) readCloseError() error {
 	rerr := bp.rerr.Load()
-	if werr := bp.werr.Load(); rerr == nil && werr != nil {
-		return werr
+	if rerr == nil {
+		if werr := bp.werr.Load(); werr != nil {
+			return werr
+		}
+		return nil
 	}
 	return io.ErrClosedPipe
 }
