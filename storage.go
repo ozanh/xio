@@ -1,6 +1,7 @@
 package xio
 
 import (
+	"errors"
 	"io"
 	"sync"
 )
@@ -43,20 +44,20 @@ func (bs *BlockStorageBuffer) ReadAt(p []byte, off int64) (n int, err error) {
 		err = io.EOF
 		return
 	}
-	ioff := int(off)
+	if off < 0 {
+		err = errors.New("invalid offset")
+		return
+	}
 
 	for {
 		var nr int
 
-		index, offset := bs.translate(ioff)
+		index, offset := bs.translate(off)
 		if index >= len(bs.blocks) {
 			err = io.EOF
 			break
 		}
-		if index < 0 {
-			err = ErrInvalidOffset
-			break
-		}
+
 		if bs.blocks[index] == nil {
 			pp := p[n:]
 			nr := len(pp)
@@ -70,7 +71,7 @@ func (bs *BlockStorageBuffer) ReadAt(p []byte, off int64) (n int, err error) {
 			nr = copy(p[n:], bs.blocks[index][offset:])
 		}
 		n += nr
-		ioff += nr
+		off += int64(nr)
 
 		if n >= len(p) || nr == 0 {
 			break
@@ -80,9 +81,9 @@ func (bs *BlockStorageBuffer) ReadAt(p []byte, off int64) (n int, err error) {
 }
 
 // translate translates the offset to index and offset in the block.
-func (bs *BlockStorageBuffer) translate(off int) (index, offset int) {
-	index = off / bs.blockSize
-	offset = off % bs.blockSize
+func (bs *BlockStorageBuffer) translate(off int64) (index, offset int) {
+	index = int(off / int64(bs.blockSize))
+	offset = int(off % int64(bs.blockSize))
 	return
 }
 
@@ -95,16 +96,15 @@ func (bs *BlockStorageBuffer) WriteAt(p []byte, off int64) (n int, err error) {
 		err = ErrNoSpaceLeft
 		return
 	}
-	ioff := int(off)
+	if off < 0 {
+		err = errors.New("invalid offset")
+		return
+	}
 
 	for {
-		index, offset := bs.translate(ioff)
+		index, offset := bs.translate(off)
 		if index >= len(bs.blocks) {
 			err = ErrNoSpaceLeft
-			break
-		}
-		if index < 0 {
-			err = ErrInvalidOffset
 			break
 		}
 
@@ -114,12 +114,12 @@ func (bs *BlockStorageBuffer) WriteAt(p []byte, off int64) (n int, err error) {
 
 		nw := copy(bs.blocks[index][offset:], p[n:])
 		n += nw
-		ioff += nw
+		off += int64(nw)
 		if n >= len(p) || nw == 0 {
 			break
 		}
 	}
-	if n != len(p) {
+	if n != len(p) && err == nil {
 		err = io.ErrShortWrite
 	}
 	return
