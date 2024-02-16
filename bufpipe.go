@@ -13,19 +13,21 @@ type BufPipeReader struct {
 	bp *bufPipe
 }
 
-// Read implements the io.Reader interface: it reads data from the buffered pipe, blocking until a writer arrives or
+// Read implements the io.Reader interface.
+// It reads data from the buffered pipe, blocking until a writer arrives or
 // the write end is closed.
 func (br *BufPipeReader) Read(p []byte) (n int, err error) {
 	return br.bp.Read(p)
 }
 
-// Close closes the reader; subsequent writes to the write half of the buffered pipe will return the error
-// ErrClosedPipe.
+// Close closes the reader; subsequent writes to the write half of the buffered
+// pipe will return the error ErrClosedPipe.
 func (br *BufPipeReader) Close() error {
 	return br.CloseWithError(nil)
 }
 
-// CloseWithError closes the reader; subsequent writes to the write half of the buffered pipe will return the error err.
+// CloseWithError closes the reader; subsequent writes to the write half of
+// the buffered pipe will return the error err.
 func (br *BufPipeReader) CloseWithError(err error) error {
 	return br.bp.closeRead(err)
 }
@@ -35,24 +37,23 @@ type BufPipeWriter struct {
 	bp *bufPipe
 }
 
-// Write implements the io.Writer interface: it writes data to the underlying buffered storage.
+// Write implements the io.Writer interface: it writes data to the underlying
+// buffered storage.
 func (bw *BufPipeWriter) Write(p []byte) (n int, err error) {
 	return bw.bp.Write(p)
 }
 
-// Close closes the writer; subsequent reads from the read half of the buffered pipe will return no bytes and EOF until
-// all the buffered data is read.
+// Close closes the writer; subsequent reads from the read half of the buffered
+// / pipe will return no bytes and EOF until all the buffered data is read, if
+// read end is not closed.
 func (bw *BufPipeWriter) Close() error {
-	return bw.CloseWithError(nil)
+	return bw.bp.closeWriteErr(nil)
 }
 
-// CloseWithError closes the writer; subsequent reads from the read half of the buffered pipe will return no bytes and
-// the error err, or EOF.
+// CloseWithError closes the writer; subsequent reads from the read half of the
+// buffered pipe will return no bytes and the error err, or EOF.
 func (bw *BufPipeWriter) CloseWithError(err error) error {
-	if err == nil {
-		return bw.bp.closeWrite()
-	}
-	return bw.bp.closeWriteErr(err, false)
+	return bw.bp.closeWriteErr(err)
 }
 
 // aBlock represents a block of data in the storage.
@@ -68,24 +69,23 @@ func (a *aBlock) endOffset() int64 {
 // bufPipe is a buffered pipe that uses a storage as a backing store.
 type bufPipe struct {
 	stor Storage
-	// rdQueue channel holds blocks available for reading. It is closed when the writer is closed.
+	// rdQueue channel holds blocks available for reading.
 	rdQueue chan aBlock
-	// wrQueue channel holds offsets available for writing. It is not closed.
+	// wrQueue channel holds offsets available for writing.
 	wrQueue chan int64
 	// done channel is closed when the reader or writer is closed.
 	done chan struct{}
 
-	rmu     sync.Mutex // Guards buf
-	buf     *bytes.Buffer
-	wmu     sync.Mutex // Guards wrblock, rdQueue close, and serializes writes
+	rmu     sync.Mutex // Serializes reads.
+	buf     bytes.Buffer
+	wmu     sync.Mutex // Serializes writes
 	wrblock aBlock     // The block currently being written
 
-	rerr        onceError
-	werr        onceError
-	storSize    int64
-	blockSize   int64
-	doneOnce    sync.Once // Protects closing done
-	rdQueueOnce sync.Once // Protects closing rdqueue
+	rerr      onceError
+	werr      onceError
+	storSize  int64
+	blockSize int64
+	doneOnce  sync.Once // Protects closing done
 }
 
 // BufPipe creates a buffered pipe with a given block size and storage size.
@@ -119,7 +119,6 @@ func BufPipe(blockSize int, storageSize int64, storager Storage) (*BufPipeReader
 		rdQueue:   make(chan aBlock, qcap),
 		wrQueue:   wrQueue,
 		done:      make(chan struct{}),
-		buf:       bytes.NewBuffer(nil),
 		storSize:  storageSize,
 		blockSize: bsize,
 	}
@@ -138,7 +137,21 @@ func (bp *bufPipe) Read(p []byte) (int, error) {
 }
 
 func (bp *bufPipe) slowRead(p []byte) (int, error) {
-	block := <-bp.rdQueue
+	var block aBlock
+	select {
+	case block = <-bp.rdQueue:
+	case <-bp.done:
+		if err := bp.rerr.Load(); err != nil {
+			return 0, err
+		}
+		// Try one more time to read from the queue,
+		// in case a write happened between the last read and the done.
+		select {
+		case block = <-bp.rdQueue:
+		default:
+		}
+	}
+
 	if block.written > 0 {
 		if debug {
 			println("reading block:", block.startOffset)
@@ -157,9 +170,7 @@ func (bp *bufPipe) slowRead(p []byte) (int, error) {
 	if debug {
 		println("read empty block:", block.startOffset)
 	}
-	if bp.buf.Cap() > 0 {
-		bp.buf = &bytes.Buffer{} // remove reference to let GC collect the buffer sooner.
-	}
+	bp.buf.Reset()
 	var err error
 	if e := bp.readCloseError(); e != nil {
 		err = e
@@ -171,11 +182,11 @@ func (bp *bufPipe) slowRead(p []byte) (int, error) {
 
 func (bp *bufPipe) enqueueRead(offset int64) {
 	select {
+	case <-bp.done:
 	case bp.wrQueue <- offset:
 		if debug {
 			println("enqueued read block:", offset)
 		}
-	case <-bp.done:
 	}
 }
 
@@ -216,7 +227,7 @@ func (bp *bufPipe) Write(p []byte) (n int, err error) {
 		nw, err = bp.writeBlock(p)
 		n += nw
 		if err != nil {
-			_ = bp.closeWriteErr(err, true)
+			_ = bp.closeWriteErr(err)
 			return
 		}
 		select {
@@ -259,9 +270,9 @@ func (bp *bufPipe) sendBlock(noclosing bool) error {
 		println("send block:", bp.wrblock.startOffset, "written:", bp.wrblock.written)
 	}
 	select {
+	case bp.rdQueue <- bp.wrblock:
 	case <-bp.done:
 		return bp.writeCloseError()
-	case bp.rdQueue <- bp.wrblock:
 	}
 	if !noclosing {
 		return nil
@@ -280,45 +291,25 @@ func (bp *bufPipe) sendBlock(noclosing bool) error {
 }
 
 func (bp *bufPipe) closeRead(err error) error {
-	iserr := true
 	if err == nil {
-		iserr = false
 		err = io.ErrClosedPipe
 	}
 	bp.rerr.Store(err)
 	bp.doneOnce.Do(func() { close(bp.done) })
-	if iserr {
-		bp.wmu.Lock()
-		defer bp.wmu.Unlock()
-		bp.rdQueueOnce.Do(func() { close(bp.rdQueue) })
-	}
 	return nil
 }
 
-func (bp *bufPipe) closeWrite() error {
-	var locked bool
-	if bp.rerr.Load() == nil {
-		locked = true
+func (bp *bufPipe) closeWriteErr(err error) error {
+	if err == nil && bp.rerr.Load() == nil {
 		bp.wmu.Lock()
-		defer bp.wmu.Unlock()
-
 		_ = bp.sendBlock(false)
-
+		bp.wmu.Unlock()
 	}
-	return bp.closeWriteErr(nil, locked)
-}
-
-func (bp *bufPipe) closeWriteErr(err error, locked bool) error {
 	if err == nil {
 		err = io.EOF
 	}
 	bp.werr.Store(err)
 	bp.doneOnce.Do(func() { close(bp.done) })
-	if !locked {
-		bp.wmu.Lock()
-		defer bp.wmu.Unlock()
-	}
-	bp.rdQueueOnce.Do(func() { close(bp.rdQueue) })
 	return nil
 }
 

@@ -496,17 +496,29 @@ func TestBufPipe_write_close_error_async(t *testing.T) {
 	require.Equal(t, 1024, n)
 	require.Equal(t, data, p)
 
-	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
 	go func() {
-		defer close(done)
+		defer wg.Done()
 		time.Sleep(100 * time.Millisecond)
 		err := pw.Close()
 		assert.NoError(t, err)
 	}()
+
+	errTest := errors.New("test")
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		time.Sleep(100 * time.Millisecond)
+		err := pw.CloseWithError(errTest)
+		assert.NoError(t, err)
+	}()
 	n, err = pr.Read(p)
-	require.Equal(t, io.EOF, err)
+	if err != io.EOF && err != errTest {
+		t.Fatalf("expected EOF or errTest, got %v", err)
+	}
 	require.Equal(t, 0, n)
-	<-done
+	wg.Wait()
 }
 
 func TestBufPipe_read_close_error_async(t *testing.T) {
@@ -538,7 +550,7 @@ func TestBufPipe_read_close_error_async(t *testing.T) {
 		assert.NoError(t, err)
 	}()
 	n, err = pr.Read(p)
-	require.Equal(t, io.ErrClosedPipe, err)
+	require.Equal(t, errTest, err)
 	require.Equal(t, 0, n)
 	<-done
 
