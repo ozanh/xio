@@ -60,7 +60,7 @@ func (bs *BlockStorageBuffer) ReadAt(p []byte, off int64) (n int, err error) {
 
 		if bs.blocks[index] == nil {
 			pp := p[n:]
-			nr := len(pp)
+			nr = len(pp)
 			if v := bs.blockSize - offset; nr > v {
 				nr = v
 			}
@@ -135,18 +135,6 @@ func (bs *BlockStorageBuffer) StorageSize() int {
 	return bs.storageSize
 }
 
-// Cap returns the total capacity of the storage. It is for debug purpose only.
-func (bs *BlockStorageBuffer) Cap() int {
-	bs.rwmu.RLock()
-	defer bs.rwmu.RUnlock()
-
-	var n int
-	for _, b := range bs.blocks {
-		n += cap(b)
-	}
-	return n
-}
-
 // StorageBuffer implements the Storage interface using a byte slice. It is for testing and debug purpose only.
 type StorageBuffer struct {
 	rwmu     sync.RWMutex // Guards buf
@@ -154,7 +142,9 @@ type StorageBuffer struct {
 	autoGrow bool
 }
 
-// NewStorageBuffer creates a new StorageBuffer with the given byte slice and auto grow flag.
+// NewStorageBuffer creates a new StorageBuffer with the given byte slice and
+// auto grow flag. StorageBuffer is suitable for small data storage and testing,
+// for large data storage, use BlockStorageBuffer.
 func NewStorageBuffer(buf []byte, autoGrow bool) *StorageBuffer {
 	return &StorageBuffer{
 		buf:      buf,
@@ -206,6 +196,14 @@ func (bs *StorageBuffer) Len() int {
 	bs.rwmu.RLock()
 	defer bs.rwmu.RUnlock()
 	return len(bs.buf)
+}
+
+// AutoGrow reports whether the storage buffer is auto growing, which is set
+// when creating the storage buffer.
+func (bs *StorageBuffer) AutoGrow() bool {
+	bs.rwmu.RLock()
+	defer bs.rwmu.RUnlock()
+	return bs.autoGrow
 }
 
 func (bs *StorageBuffer) tryGrow(explen int64) {

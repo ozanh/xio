@@ -19,8 +19,8 @@ func ExampleBufPipe_example1() {
 	pr, pw := xio.BufPipe(blockSize, storageSize, storage)
 
 	go func() {
-		pw.Write([]byte("hello"))
-		pw.Close()
+		pw.Write([]byte("hello")) //nolint:errcheck // for simplicity
+		pw.Close()                //nolint:errcheck // for simplicity
 	}()
 
 	buf := make([]byte, 1024)
@@ -43,7 +43,7 @@ func ExampleBufPipe_example2() {
 	go func() {
 		src := io.LimitReader(rand.Reader, storageSize)
 		_, err := io.Copy(pw, src)
-		pw.CloseWithError(err)
+		_ = pw.CloseWithError(err)
 	}()
 
 	n, err := io.Copy(io.Discard, pr)
@@ -65,7 +65,7 @@ func ExampleBufPipe_example3() {
 	go func() {
 		src := io.LimitReader(rand.Reader, storageSize)
 		_, err := io.Copy(pw, src)
-		pw.CloseWithError(err)
+		_ = pw.CloseWithError(err)
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -76,7 +76,7 @@ func ExampleBufPipe_example3() {
 	go func() {
 		select {
 		case <-ctx.Done():
-			pw.CloseWithError(ctx.Err())
+			_ = pw.CloseWithError(ctx.Err())
 		case <-done:
 		}
 	}()
@@ -114,7 +114,7 @@ func ExampleBufPipe_example4() {
 	go func() {
 		src := io.LimitReader(rand.Reader, 40_000_000)
 		_, err := io.Copy(pw, src)
-		pw.CloseWithError(err)
+		_ = pw.CloseWithError(err)
 	}()
 
 	n, err := io.Copy(io.Discard, pr)

@@ -19,7 +19,7 @@ import (
 	"github.com/ozanh/xio"
 )
 
-type testCase struct {
+type bufPipeTestCase struct {
 	name         string
 	blockSize    int
 	storsize     int64
@@ -29,7 +29,13 @@ type testCase struct {
 }
 
 func TestBufPipe(t *testing.T) {
-	testCases := []testCase{
+	testCases := []bufPipeTestCase{
+		{
+			name:         "blockSize=3 storSize=1024 randFileSize=1025",
+			blockSize:    3,
+			storsize:     1024,
+			randFileSize: 1025,
+		},
 		{
 			name:         "blockSize=1 storSize=1MiB randFileSize=1MiB",
 			blockSize:    1,
@@ -311,16 +317,16 @@ func TestBufPipe(t *testing.T) {
 		},
 	}
 
-	for _, tc := range testCases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
+	for _, tt := range testCases {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			testBufPipeHash(t, tc)
+			testBufPipeHash(t, tt)
 		})
 	}
 }
 
-func testBufPipeHash(t *testing.T, tc testCase) {
+func testBufPipeHash(t *testing.T, tc bufPipeTestCase) {
 	t.Helper()
 
 	tempdir := t.TempDir()
@@ -376,19 +382,85 @@ func testBufPipeHash(t *testing.T, tc testCase) {
 
 	// test storage overflow
 	if f, ok := storage.(interface{ Stat() (os.FileInfo, error) }); ok {
+
 		info, err := f.Stat()
 		require.NoError(t, err)
 		require.Equal(t, tc.storsize, info.Size())
+
 	} else if s, ok := storage.(*xio.BlockStorageBuffer); ok {
+
 		require.GreaterOrEqual(t, int64(s.StorageSize()), tc.storsize)
+
 	} else if s, ok := storage.(*xio.StorageBuffer); ok {
-		require.Equal(t, tc.storsize, int64(s.Len()))
+
+		size := tc.storsize
+		if s.AutoGrow() {
+			if tc.randFileSize < tc.storsize {
+				size = tc.randFileSize
+			}
+			require.GreaterOrEqual(t, int64(s.Len()), size)
+		} else {
+			require.Equal(t, size, int64(s.Len()))
+		}
+
 	} else {
 		t.Fatalf("unknown storage type %T", storage)
 	}
 
 	require.Equal(t, wrs256.Sum(nil), rds256.Sum(nil))
 	require.Equal(t, wrmd5.Sum(nil), rdmd5.Sum(nil))
+}
+
+func TestBufPipe_storage_buffer_auto_grow(t *testing.T) {
+	testCases := []bufPipeTestCase{
+		{
+			name:         "blockSize=3 storSize=1024 randFileSize=1025",
+			blockSize:    3,
+			storsize:     1024,
+			randFileSize: 1025,
+			storageFn: func(blockSize int, storsize int64) xio.Storage {
+				autoGrow := true
+				return xio.NewStorageBuffer(nil, autoGrow)
+			},
+		},
+		{
+			name:         "blockSize=1 storSize=1MiB randFileSize=1MiB",
+			blockSize:    1,
+			storsize:     1 * 1024 * 1024,
+			randFileSize: 1 * 1024 * 1024,
+			storageFn: func(blockSize int, storsize int64) xio.Storage {
+				autoGrow := true
+				return xio.NewStorageBuffer(nil, autoGrow)
+			},
+		},
+		{
+			name:         "blockSize=1 storSize=1MiB randFileSize=1MiB blockStorage",
+			blockSize:    1,
+			storsize:     1 * 1024 * 1024,
+			randFileSize: 1 * 1024 * 1024,
+			storageFn: func(blockSize int, storsize int64) xio.Storage {
+				autoGrow := true
+				return xio.NewStorageBuffer(nil, autoGrow)
+			},
+		},
+		{
+			name:         "blockSize=10 storSize=1MiB+1 randFileSize=1MiB-1",
+			blockSize:    10,
+			storsize:     1*1024*1024 + 1,
+			randFileSize: 1*1024*1024 - 1,
+			storageFn: func(_ int, _ int64) xio.Storage {
+				autoGrow := true
+				return xio.NewStorageBuffer(nil, autoGrow)
+			},
+		},
+	}
+
+	for _, tt := range testCases {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			testBufPipeHash(t, tt)
+		})
+	}
 }
 
 func makeSlowReader(r io.Reader) io.Reader {
@@ -513,6 +585,7 @@ func TestBufPipe_write_close_error_async(t *testing.T) {
 		err := pw.CloseWithError(errTest)
 		assert.NoError(t, err)
 	}()
+
 	n, err = pr.Read(p)
 	if err != io.EOF && err != errTest {
 		t.Fatalf("expected EOF or errTest, got %v", err)
@@ -549,8 +622,9 @@ func TestBufPipe_read_close_error_async(t *testing.T) {
 		err := pr.CloseWithError(errTest)
 		assert.NoError(t, err)
 	}()
+
 	n, err = pr.Read(p)
-	require.Equal(t, errTest, err)
+	require.Equal(t, io.ErrClosedPipe, err)
 	require.Equal(t, 0, n)
 	<-done
 
