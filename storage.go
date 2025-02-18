@@ -217,3 +217,26 @@ func (bs *StorageBuffer) tryGrow(explen int64) {
 		bs.buf = bs.buf[:explen]
 	}
 }
+
+type SyncStorage struct {
+	s  Storage
+	mu sync.Mutex
+}
+
+func NewSyncStorage(s Storage) *SyncStorage {
+	return &SyncStorage{s: s}
+}
+
+func (s *SyncStorage) ReadAt(p []byte, off int64) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.s.ReadAt(p, off)
+}
+
+func (s *SyncStorage) WriteAt(p []byte, off int64) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.s.WriteAt(p, off)
+}
