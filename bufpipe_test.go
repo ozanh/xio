@@ -414,16 +414,6 @@ func testBufPipeHash(t *testing.T, tc bufPipeTestCase) {
 func TestBufPipe_storage_buffer_auto_grow(t *testing.T) {
 	testCases := []bufPipeTestCase{
 		{
-			name:         "blockSize=3 storSize=1024 randFileSize=1025",
-			blockSize:    3,
-			storsize:     1024,
-			randFileSize: 1025,
-			storageFn: func(blockSize int, storsize int64) xio.Storage {
-				autoGrow := true
-				return xio.NewStorageBuffer(nil, autoGrow)
-			},
-		},
-		{
 			name:         "blockSize=1 storSize=1MiB randFileSize=1MiB",
 			blockSize:    1,
 			storsize:     1 * 1024 * 1024,
@@ -434,10 +424,20 @@ func TestBufPipe_storage_buffer_auto_grow(t *testing.T) {
 			},
 		},
 		{
-			name:         "blockSize=1 storSize=1MiB randFileSize=1MiB blockStorage",
-			blockSize:    1,
+			name:         "blockSize=2 storSize=1MiB randFileSize=1MiB",
+			blockSize:    2,
 			storsize:     1 * 1024 * 1024,
 			randFileSize: 1 * 1024 * 1024,
+			storageFn: func(blockSize int, storsize int64) xio.Storage {
+				autoGrow := true
+				return xio.NewStorageBuffer(nil, autoGrow)
+			},
+		},
+		{
+			name:         "blockSize=3 storSize=1024 randFileSize=1025",
+			blockSize:    3,
+			storsize:     1024,
+			randFileSize: 1025,
 			storageFn: func(blockSize int, storsize int64) xio.Storage {
 				autoGrow := true
 				return xio.NewStorageBuffer(nil, autoGrow)
@@ -458,6 +458,7 @@ func TestBufPipe_storage_buffer_auto_grow(t *testing.T) {
 	for _, tt := range testCases {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			testBufPipeHash(t, tt)
 		})
 	}

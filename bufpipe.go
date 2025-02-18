@@ -327,11 +327,12 @@ func (bp *bufPipe) closeWrite(err error) error {
 		bp.wmu.Lock()
 		defer bp.wmu.Unlock()
 
+		bp.werr.store(io.EOF)
+
 		bp.queue.pushReadable(bp.wrblock)
 		if bp.wrblock != (aBlock{}) {
 			bp.queue.pushReadable(aBlock{})
 		}
-		bp.werr.store(io.EOF)
 		return nil
 	}
 	bp.werr.store(err)
