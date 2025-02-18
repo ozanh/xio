@@ -7,50 +7,50 @@ import (
 )
 
 // BufPipeReader is the read half of a buffered pipe.
-type BufPipeReader[T Storage] struct {
-	bp *bufPipe[T]
+type BufPipeReader struct {
+	bp *bufPipe
 }
 
 // Read implements the io.Reader interface.
 // It reads data from the buffered pipe, blocking until a writer arrives or
 // the write end is closed.
-func (br *BufPipeReader[T]) Read(p []byte) (n int, err error) {
-	return br.bp.Read(p)
+func (br *BufPipeReader) Read(p []byte) (n int, err error) {
+	return br.bp.read(p)
 }
 
 // Close closes the reader; subsequent writes to the write half of the buffered
 // pipe will return the error ErrClosedPipe.
-func (br *BufPipeReader[T]) Close() error {
+func (br *BufPipeReader) Close() error {
 	return br.CloseWithError(nil)
 }
 
 // CloseWithError closes the reader; subsequent writes to the write half of
 // the buffered pipe will return the error err.
-func (br *BufPipeReader[T]) CloseWithError(err error) error {
+func (br *BufPipeReader) CloseWithError(err error) error {
 	return br.bp.closeRead(err)
 }
 
 // BufPipeWriter is the write half of a buffered pipe.
-type BufPipeWriter[T Storage] struct {
-	bp *bufPipe[T]
+type BufPipeWriter struct {
+	bp *bufPipe
 }
 
 // Write implements the io.Writer interface: it writes data to the underlying
 // buffered storage.
-func (bw *BufPipeWriter[T]) Write(p []byte) (n int, err error) {
-	return bw.bp.Write(p)
+func (bw *BufPipeWriter) Write(p []byte) (n int, err error) {
+	return bw.bp.write(p)
 }
 
 // Close closes the writer; subsequent reads from the read half of the buffered
 // / pipe will return no bytes and EOF until all the buffered data is read, if
 // read end is not closed.
-func (bw *BufPipeWriter[T]) Close() error {
+func (bw *BufPipeWriter) Close() error {
 	return bw.bp.closeWrite(nil)
 }
 
 // CloseWithError closes the writer; subsequent reads from the read half of the
 // buffered pipe will return no bytes and the error err, or EOF.
-func (bw *BufPipeWriter[T]) CloseWithError(err error) error {
+func (bw *BufPipeWriter) CloseWithError(err error) error {
 	return bw.bp.closeWrite(err)
 }
 
@@ -65,8 +65,8 @@ func (a *aBlock) endOffset() int64 {
 }
 
 // bufPipe is a buffered pipe that uses a storage as a backing store.
-type bufPipe[T Storage] struct {
-	stor *syncStorage[T]
+type bufPipe struct {
+	stor *SyncStorage
 
 	queue *blockQueue
 
@@ -89,7 +89,7 @@ type bufPipe[T Storage] struct {
 // If blockSize is zero, a default value is used. If blockSize is less than bytes.MinRead, it is set to bytes.MinRead.
 // The storageSize should be a multiple of the block size.
 // If storageSize is not positive, it panics.
-func BufPipe[T Storage](blockSize int, storageSize int64, storage T) (*BufPipeReader[T], *BufPipeWriter[T]) {
+func BufPipe(blockSize int, storageSize int64, storage Storage) (*BufPipeReader, *BufPipeWriter) {
 	bsize := int64(blockSize)
 	if bsize <= 0 {
 		bsize = DefaultBlockSize
@@ -101,13 +101,18 @@ func BufPipe[T Storage](blockSize int, storageSize int64, storage T) (*BufPipeRe
 		bsize = storageSize
 	}
 
-	bp := &bufPipe[T]{
-		stor: &syncStorage[T]{s: storage},
+	syncStorage, _ := storage.(*SyncStorage)
+	if syncStorage == nil {
+		syncStorage = NewSyncStorage(storage)
+	}
+
+	bp := &bufPipe{
+		stor: syncStorage,
 		queue: &blockQueue{
 			readSignal:  make(chan struct{}, 1),
 			writeSignal: make(chan struct{}, 1),
-			writable:    newSegmentedSlice[int64](8),
-			readable:    newSegmentedSlice[aBlock](8),
+			writable:    newSegmentedSlice[int64](16),
+			readable:    newSegmentedSlice[aBlock](16),
 		},
 		buf:         bytes.NewBuffer(nil),
 		doneChan:    make(chan struct{}),
@@ -119,13 +124,18 @@ func BufPipe[T Storage](blockSize int, storageSize int64, storage T) (*BufPipeRe
 		bp.queue.writable.append(offset)
 	}
 
-	return &BufPipeReader[T]{bp: bp}, &BufPipeWriter[T]{bp: bp}
+	return &BufPipeReader{bp: bp}, &BufPipeWriter{bp: bp}
 }
 
-// Read implements io.Reader. BufPipeReader should call this method.
-func (bp *bufPipe[T]) Read(p []byte) (int, error) {
+func (bp *bufPipe) read(p []byte) (int, error) {
 	bp.rmu.Lock()
 	defer bp.rmu.Unlock()
+
+	select {
+	case <-bp.doneChan:
+		return 0, bp.readCloseError()
+	default:
+	}
 
 	if bp.buf.Len() > 0 {
 		return bp.buf.Read(p)
@@ -136,8 +146,8 @@ func (bp *bufPipe[T]) Read(p []byte) (int, error) {
 	return bp.slowRead(p)
 }
 
-func (bp *bufPipe[T]) slowRead(p []byte) (int, error) {
-	block, err := bp.getReadBlock()
+func (bp *bufPipe) slowRead(p []byte) (int, error) {
+	block, err := bp.getReadable()
 	if err != nil {
 		return 0, err
 	}
@@ -153,7 +163,7 @@ func (bp *bufPipe[T]) slowRead(p []byte) (int, error) {
 		if err != nil {
 			_ = bp.closeRead(err)
 		} else {
-			bp.enqueueReadBlock(block.startOffset)
+			bp.enqueueWritable(block.startOffset)
 		}
 		return n, err
 	}
@@ -172,39 +182,30 @@ func (bp *bufPipe[T]) slowRead(p []byte) (int, error) {
 	return 0, err
 }
 
-func (bp *bufPipe[T]) getReadBlock() (aBlock, error) {
-	tryOneMore := true
+func (bp *bufPipe) getReadable() (aBlock, error) {
+
 	for {
 		block, ok := bp.queue.popReadable()
 		if ok {
 			return block, nil
 		}
 		select {
+		case <-bp.doneChan:
+			return aBlock{}, bp.readCloseError()
 		case <-bp.queue.readSignal:
 			continue
-		case <-bp.doneChan:
-			if tryOneMore {
-				// Try one more time to read from the queue,
-				// in case a write happened between the last read and the done.
-				tryOneMore = false
-				if err := bp.rerr.Load(); err == nil {
-					continue
-				}
-			}
-
-			return aBlock{}, bp.readCloseError()
 		}
 	}
 }
 
-func (bp *bufPipe[T]) enqueueReadBlock(offset int64) {
+func (bp *bufPipe) enqueueWritable(offset int64) {
 	bp.queue.pushWritable(offset)
 	if debug {
 		println("enqueued read block:", offset)
 	}
 }
 
-func (bp *bufPipe[T]) readAndFill(offset, size int64, p []byte) (int, error) {
+func (bp *bufPipe) readAndFill(offset, size int64, p []byte) (int, error) {
 	bp.buf.Reset()
 
 	n := len(p)
@@ -228,14 +229,7 @@ func (bp *bufPipe[T]) readAndFill(offset, size int64, p []byte) (int, error) {
 	return n, err
 }
 
-// Write implements io.Writer. BufPipeWriter should call this method.
-func (bp *bufPipe[T]) Write(p []byte) (n int, err error) {
-	select {
-	case <-bp.doneChan:
-		return 0, bp.writeCloseError()
-	default:
-	}
-
+func (bp *bufPipe) write(p []byte) (n int, err error) {
 	bp.wmu.Lock()
 	defer bp.wmu.Unlock()
 
@@ -251,15 +245,10 @@ func (bp *bufPipe[T]) Write(p []byte) (n int, err error) {
 			_ = bp.closeWrite(err)
 			return
 		}
-		select {
-		case <-bp.doneChan:
-			err = bp.writeCloseError()
-			return
-		default:
-		}
 		p = p[nw:]
 	}
-	err = bp.sendBlock()
+
+	err = bp.flushBlock()
 
 	if debug {
 		println("end of write block:", bp.wrblock.startOffset, "written:", bp.wrblock.written)
@@ -267,8 +256,8 @@ func (bp *bufPipe[T]) Write(p []byte) (n int, err error) {
 	return
 }
 
-func (bp *bufPipe[T]) writeBlock(p []byte) (int, error) {
-	if err := bp.sendBlock(); err != nil {
+func (bp *bufPipe) writeBlock(p []byte) (int, error) {
+	if err := bp.flushBlock(); err != nil {
 		return 0, err
 	}
 
@@ -287,7 +276,13 @@ func (bp *bufPipe[T]) writeBlock(p []byte) (int, error) {
 	return n, err
 }
 
-func (bp *bufPipe[T]) sendBlock() error {
+func (bp *bufPipe) flushBlock() error {
+	select {
+	case <-bp.doneChan:
+		return bp.writeCloseError()
+	default:
+	}
+
 	if bp.wrblock.written < bp.blockSize &&
 		bp.wrblock.endOffset() < bp.storageSize {
 		return nil
@@ -318,66 +313,46 @@ func (bp *bufPipe[T]) sendBlock() error {
 	return nil
 }
 
-func (bp *bufPipe[T]) closeRead(err error) error {
+func (bp *bufPipe) closeRead(err error) error {
 	if err == nil {
 		err = io.ErrClosedPipe
 	}
-	bp.rerr.Store(err)
+	bp.rerr.store(err)
 	bp.doneOnce.Do(func() { close(bp.doneChan) })
 	return nil
 }
 
-func (bp *bufPipe[T]) closeWrite(err error) error {
+func (bp *bufPipe) closeWrite(err error) error {
 	if err == nil {
 		bp.wmu.Lock()
 		defer bp.wmu.Unlock()
 
 		bp.queue.pushReadable(bp.wrblock)
-		bp.queue.pushReadable(aBlock{})
-
-		err = io.EOF
+		if bp.wrblock != (aBlock{}) {
+			bp.queue.pushReadable(aBlock{})
+		}
+		bp.werr.store(io.EOF)
+		return nil
 	}
-	bp.werr.Store(err)
+	bp.werr.store(err)
 	bp.doneOnce.Do(func() { close(bp.doneChan) })
 	return nil
 }
 
-func (bp *bufPipe[T]) readCloseError() error {
-	rerr := bp.rerr.Load()
-	if rerr == nil {
-		if werr := bp.werr.Load(); werr != nil {
-			return werr
-		}
-		return nil
+func (bp *bufPipe) readCloseError() error {
+	rerr := bp.rerr.load()
+	if werr := bp.werr.load(); rerr == nil && werr != nil {
+		return werr
 	}
 	return io.ErrClosedPipe
 }
 
-func (bp *bufPipe[T]) writeCloseError() error {
-	werr := bp.werr.Load()
-	if rerr := bp.rerr.Load(); werr == nil && rerr != nil {
+func (bp *bufPipe) writeCloseError() error {
+	werr := bp.werr.load()
+	if rerr := bp.rerr.load(); werr == nil && rerr != nil {
 		return rerr
 	}
 	return io.ErrClosedPipe
-}
-
-type syncStorage[T Storage] struct {
-	s  Storage
-	mu sync.Mutex
-}
-
-func (s *syncStorage[T]) ReadAt(p []byte, off int64) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	return s.s.ReadAt(p, off)
-}
-
-func (s *syncStorage[T]) WriteAt(p []byte, off int64) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	return s.s.WriteAt(p, off)
 }
 
 // onceError is an object that will only store an error once.
@@ -386,20 +361,22 @@ type onceError struct {
 	err        error
 }
 
-// Store stores the error if it has not been stored before.
-func (a *onceError) Store(err error) {
+// store stores the error if it has not been stored before.
+func (a *onceError) store(err error) {
 	a.Lock()
 	defer a.Unlock()
+
 	if a.err != nil {
 		return
 	}
 	a.err = err
 }
 
-// Load returns the stored error.
-func (a *onceError) Load() error {
+// load returns the stored error.
+func (a *onceError) load() error {
 	a.Lock()
 	defer a.Unlock()
+
 	return a.err
 }
 
@@ -415,14 +392,14 @@ func (b *blockQueue) popReadable() (aBlock, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	return b.readable.removeFirst()
+	return b.readable.popFirst()
 }
 
 func (b *blockQueue) popWritable() (int64, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	return b.writable.removeFirst()
+	return b.writable.popFirst()
 }
 
 func (b *blockQueue) pushWritable(offset int64) {
@@ -465,7 +442,7 @@ func (s *segmentedSlice[T]) append(item T) {
 	s.segments[last] = append(s.segments[last], item)
 }
 
-func (s *segmentedSlice[T]) removeFirst() (T, bool) {
+func (s *segmentedSlice[T]) popFirst() (T, bool) {
 	if len(s.segments) == 0 {
 		var zero T
 		return zero, false
@@ -474,7 +451,7 @@ func (s *segmentedSlice[T]) removeFirst() (T, bool) {
 	seg := s.segments[0]
 	if len(seg) == 0 {
 		s.segments = append(s.segments[:0], s.segments[1:]...)
-		return s.removeFirst()
+		return s.popFirst()
 	}
 
 	item := seg[0]
