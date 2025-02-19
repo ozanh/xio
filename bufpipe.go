@@ -404,13 +404,12 @@ func (bp *bufPipe) closeWrite(err error) error {
 	}
 
 	stored := bp.werr.store(err)
-
-	if !eof {
-		bp.doneOnce.Do(func() { close(bp.doneChan) })
-		return nil
-	}
 	if !stored {
 		// Another error is already stored.
+		return nil
+	}
+	if !eof {
+		bp.doneOnce.Do(func() { close(bp.doneChan) })
 		return nil
 	}
 

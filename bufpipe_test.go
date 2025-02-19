@@ -3,11 +3,11 @@ package xio_test
 import (
 	"bytes"
 	"crypto/md5"
-	"crypto/rand"
+	cryptorand "crypto/rand"
 	"crypto/sha256"
 	"errors"
 	"io"
-	"math/big"
+	"math/rand"
 	"os"
 	"sync"
 	"testing"
@@ -351,7 +351,7 @@ func testBufPipeHash(t *testing.T, tc bufPipeTestCase) {
 	require.NoError(t, err)
 	defer srcfile.Close()
 
-	_, err = io.Copy(srcfile, io.LimitReader(rand.Reader, tc.randFileSize))
+	_, err = io.Copy(srcfile, io.LimitReader(cryptorand.Reader, tc.randFileSize))
 	require.NoError(t, err)
 
 	_, err = srcfile.Seek(0, io.SeekStart)
@@ -469,20 +469,22 @@ func TestBufPipe_storage_buffer_auto_grow(t *testing.T) {
 }
 
 func makeSlowReader(r io.Reader) io.Reader {
-	return &slowReader{r: r}
+	return &slowReader{
+		reader: r,
+		rand:   rand.New(rand.NewSource(time.Now().UnixNano())),
+	}
 }
 
 type slowReader struct {
-	r io.Reader
+	reader io.Reader
+	rand   *rand.Rand
 }
 
 func (r *slowReader) Read(p []byte) (int, error) {
-	b, err := rand.Int(rand.Reader, big.NewInt(10))
-	if err == nil {
-		d := time.Duration(b.Int64()) * time.Millisecond / 10
-		time.Sleep(d)
-	}
-	return r.r.Read(p)
+	i := r.rand.Intn(10)
+	d := time.Duration(i) * time.Millisecond / 10
+	time.Sleep(d)
+	return r.reader.Read(p)
 }
 
 func TestBufPipe_single_block(t *testing.T) {
@@ -515,7 +517,7 @@ func TestBufPipe_no_space(t *testing.T) {
 	_, pw := xio.BufPipe(1024, 1024*1024, storage)
 
 	data := make([]byte, 1024)
-	_, err := io.ReadFull(rand.Reader, data)
+	_, err := io.ReadFull(cryptorand.Reader, data)
 	require.NoError(t, err)
 
 	n, err := pw.Write(data)
@@ -530,7 +532,7 @@ func TestBufPipe_write_close_error(t *testing.T) {
 	pr, pw := xio.BufPipe(1024, 1024*1024, storage)
 
 	data := make([]byte, 1024)
-	_, err := io.ReadFull(rand.Reader, data)
+	_, err := io.ReadFull(cryptorand.Reader, data)
 	require.NoError(t, err)
 
 	n, err := pw.Write(data)
@@ -558,7 +560,7 @@ func TestBufPipe_write_close_error_async(t *testing.T) {
 	pr, pw := xio.BufPipe(1024, 1024*1024, storage)
 
 	data := make([]byte, 1024)
-	_, err := io.ReadFull(rand.Reader, data)
+	_, err := io.ReadFull(cryptorand.Reader, data)
 	require.NoError(t, err)
 
 	n, err := pw.Write(data)
@@ -604,7 +606,7 @@ func TestBufPipe_read_close_error_async(t *testing.T) {
 	pr, pw := xio.BufPipe(1024, 1024*1024, storage)
 
 	data := make([]byte, 1024)
-	_, err := io.ReadFull(rand.Reader, data)
+	_, err := io.ReadFull(cryptorand.Reader, data)
 	require.NoError(t, err)
 
 	n, err := pw.Write(data)

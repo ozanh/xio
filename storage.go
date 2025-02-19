@@ -25,10 +25,8 @@ func NewBlockStorageBuffer(blockSize, storageSize int) *BlockStorageBuffer {
 
 	if storageSize < blockSize {
 		storageSize = blockSize
-	}
-
-	if storageSize%blockSize != 0 {
-		storageSize = (storageSize/blockSize + 1) * blockSize
+	} else if rem := storageSize % blockSize; rem != 0 {
+		storageSize = storageSize + blockSize - rem
 	}
 
 	return &BlockStorageBuffer{
