@@ -12,6 +12,8 @@ var (
 	ErrComparisonDataMismatch      = errors.New("data mismatch")
 )
 
+// ReadersDataComparisonError is an error returned by CompareReadersData when
+// the data read from the readers is not equal.
 type ReadersDataComparisonError struct {
 	Err        error
 	ErrLeft    error
@@ -29,27 +31,35 @@ func (e *ReadersDataComparisonError) Unwrap() error {
 	return e.Err
 }
 
+// CompareReadersData compares the data read from two readers.
+// It returns an error if the data read from the readers is not equal.
+// CompareReadersData reads data from the readers in chunks and compares the
+// data in the chunks. If the data read from the readers is not equal, it
+// returns an error with the data read from the readers. The error is of type
+// *ReadersDataComparisonError.
 func CompareReadersData[T io.Reader](left, right T) error {
 	return CompareReadersDataWithBuffer(left, right, nil)
 }
 
-func CompareReadersDataWithBuffer[T io.Reader](left, right T, buf []byte) error {
-	if len(buf) > 0 && len(buf)%2 != 0 {
-		buf = buf[:len(buf)-1]
+// CompareReadersDataWithBuffer is like CompareReadersData but accepts a buffer
+// to use for reading data from the readers. If the buffer is not provided, a
+// new buffer of size 64KB is used. Given buffer is split into two halves and
+// used for reading data from the readers.
+func CompareReadersDataWithBuffer[T io.Reader](left, right T, buffer []byte) error {
+	if len(buffer) > 0 && len(buffer)%2 != 0 {
+		buffer = buffer[:len(buffer)-1]
 	}
 
-	if len(buf) == 0 {
-		buf = make([]byte, 2*64*bytes.MinRead)
-	} else if len(buf) < 2*bytes.MinRead {
-		buf = make([]byte, 2*bytes.MinRead)
+	if len(buffer) == 0 {
+		buffer = make([]byte, 64*1024)
 	}
 
-	half := len(buf) / 2
+	half := len(buffer) / 2
 
 	var offset int64
 	for {
 
-		n1, err1 := ReadFill(left, buf[:half])
+		n1, err1 := ReadFill(left, buffer[:half])
 		if err1 == io.EOF {
 			err1 = nil
 		}
@@ -59,7 +69,7 @@ func CompareReadersDataWithBuffer[T io.Reader](left, right T, buf []byte) error 
 			end = 2 * half
 		}
 
-		n2, err2 := ReadFill(right, buf[half:end])
+		n2, err2 := ReadFill(right, buffer[half:end])
 		if err2 == io.EOF {
 			err2 = nil
 		}
@@ -71,8 +81,8 @@ func CompareReadersDataWithBuffer[T io.Reader](left, right T, buf []byte) error 
 		} else if n1 != n2 {
 			err = ErrComparisonByteCountMismatch
 		} else if !bytes.Equal(
-			buf[:n1],
-			buf[half:half+n2],
+			buffer[:n1],
+			buffer[half:half+n2],
 		) {
 			err = ErrComparisonDataMismatch
 		}
@@ -82,8 +92,8 @@ func CompareReadersDataWithBuffer[T io.Reader](left, right T, buf []byte) error 
 				Err:        err,
 				ErrLeft:    err1,
 				ErrRight:   err2,
-				BytesLeft:  clipBytes(buf[:n1]),
-				BytesRight: clipBytes(buf[half : half+n2]),
+				BytesLeft:  clipBytes(buffer[:n1]),
+				BytesRight: clipBytes(buffer[half : half+n2]),
 				Offset:     offset,
 			}
 		}

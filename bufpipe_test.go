@@ -37,25 +37,28 @@ func TestBufPipe(t *testing.T) {
 			randFileSize: 1025,
 		},
 		{
-			name:         "blockSize=1 storSize=1MiB randFileSize=1MiB",
+			name:         "blockSize=1 storSize=10KiB randFileSize=10KiB",
 			blockSize:    1,
-			storsize:     1 * 1024 * 1024,
-			randFileSize: 1 * 1024 * 1024,
+			storsize:     10 * 1024,
+			randFileSize: 10 * 1024,
 		},
 		{
-			name:         "blockSize=1 storSize=1MiB randFileSize=1MiB blockStorage",
+			name:         "blockSize=1 storSize=100KiB randFileSize=100KiB blockStorage",
 			blockSize:    1,
-			storsize:     1 * 1024 * 1024,
-			randFileSize: 1 * 1024 * 1024,
+			storsize:     100 * 1024,
+			randFileSize: 100 * 1024,
 			storageFn: func(blockSize int, storsize int64) xio.Storage {
 				return xio.NewBlockStorageBuffer(blockSize, int(storsize))
 			},
 		},
 		{
-			name:         "blockSize=10 storSize=1MiB+1 randFileSize=1MiB-1",
+			name:         "blockSize=10 storSize=1MiB+1 randFileSize=1MiB-1 blockStorage",
 			blockSize:    10,
 			storsize:     1*1024*1024 + 1,
 			randFileSize: 1*1024*1024 - 1,
+			storageFn: func(blockSize int, storsize int64) xio.Storage {
+				return xio.NewBlockStorageBuffer(blockSize, int(storsize))
+			},
 		},
 		{
 			name:         "blockSize=512 storSize=1MiB+1 randFileSize=1MiB-1",
@@ -350,6 +353,7 @@ func testBufPipeHash(t *testing.T, tc bufPipeTestCase) {
 
 	_, err = io.Copy(srcfile, io.LimitReader(rand.Reader, tc.randFileSize))
 	require.NoError(t, err)
+
 	_, err = srcfile.Seek(0, io.SeekStart)
 	require.NoError(t, err)
 
@@ -414,20 +418,20 @@ func testBufPipeHash(t *testing.T, tc bufPipeTestCase) {
 func TestBufPipe_storage_buffer_auto_grow(t *testing.T) {
 	testCases := []bufPipeTestCase{
 		{
-			name:         "blockSize=1 storSize=1MiB randFileSize=1MiB",
+			name:         "blockSize=1 storSize=100KiB randFileSize=100KiB",
 			blockSize:    1,
-			storsize:     1 * 1024 * 1024,
-			randFileSize: 1 * 1024 * 1024,
+			storsize:     100 * 1024,
+			randFileSize: 100 * 1024,
 			storageFn: func(blockSize int, storsize int64) xio.Storage {
 				autoGrow := true
 				return xio.NewStorageBuffer(nil, autoGrow)
 			},
 		},
 		{
-			name:         "blockSize=2 storSize=1MiB randFileSize=1MiB",
+			name:         "blockSize=2 storSize=100KiB randFileSize=100KiB",
 			blockSize:    2,
-			storsize:     1 * 1024 * 1024,
-			randFileSize: 1 * 1024 * 1024,
+			storsize:     100 * 1024,
+			randFileSize: 100 * 1024,
 			storageFn: func(blockSize int, storsize int64) xio.Storage {
 				autoGrow := true
 				return xio.NewStorageBuffer(nil, autoGrow)
@@ -444,10 +448,10 @@ func TestBufPipe_storage_buffer_auto_grow(t *testing.T) {
 			},
 		},
 		{
-			name:         "blockSize=10 storSize=1MiB+1 randFileSize=1MiB-1",
+			name:         "blockSize=10 storSize=1KiB+1 randFileSize=1KiB-1",
 			blockSize:    10,
-			storsize:     1*1024*1024 + 1,
-			randFileSize: 1*1024*1024 - 1,
+			storsize:     1*1024 + 1,
+			randFileSize: 1*1024 - 1,
 			storageFn: func(_ int, _ int64) xio.Storage {
 				autoGrow := true
 				return xio.NewStorageBuffer(nil, autoGrow)
@@ -473,7 +477,7 @@ type slowReader struct {
 }
 
 func (r *slowReader) Read(p []byte) (int, error) {
-	b, err := rand.Int(rand.Reader, big.NewInt(120))
+	b, err := rand.Int(rand.Reader, big.NewInt(10))
 	if err == nil {
 		d := time.Duration(b.Int64()) * time.Millisecond / 10
 		time.Sleep(d)

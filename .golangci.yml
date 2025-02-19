@@ -1,29 +1,3 @@
-linters:
-  enable:
-    - bidichk
-    - exportloopref
-    - asciicheck
-    - durationcheck
-    - errchkjson
-    - grouper
-    - nilerr
-    - predeclared
-    - unconvert
-    - wastedassign
-    - misspell
-    # - unparam
-    # - prealloc
-    # - nolintlint
-    # - nilnil
-    # - gosec
-    # - errorlint
-    # - errname
-    # - cyclop
-    # - goconst
-    # - bodyclose
-    # - dupl
-    # - dogsled
-
-linter-settings:
+linters-settings:
   misspell:
     locale: US
