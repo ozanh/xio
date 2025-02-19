@@ -4,7 +4,6 @@
 [![Go](https://github.com/ozanh/xio/actions/workflows/go.yml/badge.svg)](https://github.com/ozanh/xio/actions/workflows/go.yml)
 
 `xio` is an extended io library for my various needs.
-As of now, It provides `BufPipe`, which is a buffered pipe implementation, and helper `Storage` implementations.
 
 ## Contributing
 

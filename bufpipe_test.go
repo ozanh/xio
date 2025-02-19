@@ -3,11 +3,11 @@ package xio_test
 import (
 	"bytes"
 	"crypto/md5"
-	"crypto/rand"
+	cryptorand "crypto/rand"
 	"crypto/sha256"
 	"errors"
 	"io"
-	"math/big"
+	"math/rand"
 	"os"
 	"sync"
 	"testing"
@@ -19,7 +19,7 @@ import (
 	"github.com/ozanh/xio"
 )
 
-type testCase struct {
+type bufPipeTestCase struct {
 	name         string
 	blockSize    int
 	storsize     int64
@@ -29,27 +29,36 @@ type testCase struct {
 }
 
 func TestBufPipe(t *testing.T) {
-	testCases := []testCase{
+	testCases := []bufPipeTestCase{
 		{
-			name:         "blockSize=1 storSize=1MiB randFileSize=1MiB",
-			blockSize:    1,
-			storsize:     1 * 1024 * 1024,
-			randFileSize: 1 * 1024 * 1024,
+			name:         "blockSize=3 storSize=1024 randFileSize=1025",
+			blockSize:    3,
+			storsize:     1024,
+			randFileSize: 1025,
 		},
 		{
-			name:         "blockSize=1 storSize=1MiB randFileSize=1MiB blockStorage",
+			name:         "blockSize=1 storSize=10KiB randFileSize=10KiB",
 			blockSize:    1,
-			storsize:     1 * 1024 * 1024,
-			randFileSize: 1 * 1024 * 1024,
+			storsize:     10 * 1024,
+			randFileSize: 10 * 1024,
+		},
+		{
+			name:         "blockSize=1 storSize=100KiB randFileSize=100KiB blockStorage",
+			blockSize:    1,
+			storsize:     100 * 1024,
+			randFileSize: 100 * 1024,
 			storageFn: func(blockSize int, storsize int64) xio.Storage {
 				return xio.NewBlockStorageBuffer(blockSize, int(storsize))
 			},
 		},
 		{
-			name:         "blockSize=10 storSize=1MiB+1 randFileSize=1MiB-1",
+			name:         "blockSize=10 storSize=1MiB+1 randFileSize=1MiB-1 blockStorage",
 			blockSize:    10,
 			storsize:     1*1024*1024 + 1,
 			randFileSize: 1*1024*1024 - 1,
+			storageFn: func(blockSize int, storsize int64) xio.Storage {
+				return xio.NewBlockStorageBuffer(blockSize, int(storsize))
+			},
 		},
 		{
 			name:         "blockSize=512 storSize=1MiB+1 randFileSize=1MiB-1",
@@ -311,16 +320,16 @@ func TestBufPipe(t *testing.T) {
 		},
 	}
 
-	for _, tc := range testCases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
+	for _, tt := range testCases {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			testBufPipeHash(t, tc)
+			testBufPipeHash(t, tt)
 		})
 	}
 }
 
-func testBufPipeHash(t *testing.T, tc testCase) {
+func testBufPipeHash(t *testing.T, tc bufPipeTestCase) {
 	t.Helper()
 
 	tempdir := t.TempDir()
@@ -342,8 +351,9 @@ func testBufPipeHash(t *testing.T, tc testCase) {
 	require.NoError(t, err)
 	defer srcfile.Close()
 
-	_, err = io.Copy(srcfile, io.LimitReader(rand.Reader, tc.randFileSize))
+	_, err = io.Copy(srcfile, io.LimitReader(cryptorand.Reader, tc.randFileSize))
 	require.NoError(t, err)
+
 	_, err = srcfile.Seek(0, io.SeekStart)
 	require.NoError(t, err)
 
@@ -376,13 +386,27 @@ func testBufPipeHash(t *testing.T, tc testCase) {
 
 	// test storage overflow
 	if f, ok := storage.(interface{ Stat() (os.FileInfo, error) }); ok {
+
 		info, err := f.Stat()
 		require.NoError(t, err)
 		require.Equal(t, tc.storsize, info.Size())
+
 	} else if s, ok := storage.(*xio.BlockStorageBuffer); ok {
+
 		require.GreaterOrEqual(t, int64(s.StorageSize()), tc.storsize)
+
 	} else if s, ok := storage.(*xio.StorageBuffer); ok {
-		require.Equal(t, tc.storsize, int64(s.Len()))
+
+		size := tc.storsize
+		if s.AutoGrow() {
+			if tc.randFileSize < tc.storsize {
+				size = tc.randFileSize
+			}
+			require.GreaterOrEqual(t, int64(s.Len()), size)
+		} else {
+			require.Equal(t, size, int64(s.Len()))
+		}
+
 	} else {
 		t.Fatalf("unknown storage type %T", storage)
 	}
@@ -391,21 +415,76 @@ func testBufPipeHash(t *testing.T, tc testCase) {
 	require.Equal(t, wrmd5.Sum(nil), rdmd5.Sum(nil))
 }
 
+func TestBufPipe_storage_buffer_auto_grow(t *testing.T) {
+	testCases := []bufPipeTestCase{
+		{
+			name:         "blockSize=1 storSize=100KiB randFileSize=100KiB",
+			blockSize:    1,
+			storsize:     100 * 1024,
+			randFileSize: 100 * 1024,
+			storageFn: func(blockSize int, storsize int64) xio.Storage {
+				autoGrow := true
+				return xio.NewStorageBuffer(nil, autoGrow)
+			},
+		},
+		{
+			name:         "blockSize=2 storSize=100KiB randFileSize=100KiB",
+			blockSize:    2,
+			storsize:     100 * 1024,
+			randFileSize: 100 * 1024,
+			storageFn: func(blockSize int, storsize int64) xio.Storage {
+				autoGrow := true
+				return xio.NewStorageBuffer(nil, autoGrow)
+			},
+		},
+		{
+			name:         "blockSize=3 storSize=1024 randFileSize=1025",
+			blockSize:    3,
+			storsize:     1024,
+			randFileSize: 1025,
+			storageFn: func(blockSize int, storsize int64) xio.Storage {
+				autoGrow := true
+				return xio.NewStorageBuffer(nil, autoGrow)
+			},
+		},
+		{
+			name:         "blockSize=10 storSize=1KiB+1 randFileSize=1KiB-1",
+			blockSize:    10,
+			storsize:     1*1024 + 1,
+			randFileSize: 1*1024 - 1,
+			storageFn: func(_ int, _ int64) xio.Storage {
+				autoGrow := true
+				return xio.NewStorageBuffer(nil, autoGrow)
+			},
+		},
+	}
+
+	for _, tt := range testCases {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testBufPipeHash(t, tt)
+		})
+	}
+}
+
 func makeSlowReader(r io.Reader) io.Reader {
-	return &slowReader{r: r}
+	return &slowReader{
+		reader: r,
+		rand:   rand.New(rand.NewSource(time.Now().UnixNano())),
+	}
 }
 
 type slowReader struct {
-	r io.Reader
+	reader io.Reader
+	rand   *rand.Rand
 }
 
 func (r *slowReader) Read(p []byte) (int, error) {
-	b, err := rand.Int(rand.Reader, big.NewInt(120))
-	if err == nil {
-		d := time.Duration(b.Int64()) * time.Millisecond / 10
-		time.Sleep(d)
-	}
-	return r.r.Read(p)
+	i := r.rand.Intn(10)
+	d := time.Duration(i) * time.Millisecond / 10
+	time.Sleep(d)
+	return r.reader.Read(p)
 }
 
 func TestBufPipe_single_block(t *testing.T) {
@@ -438,7 +517,7 @@ func TestBufPipe_no_space(t *testing.T) {
 	_, pw := xio.BufPipe(1024, 1024*1024, storage)
 
 	data := make([]byte, 1024)
-	_, err := io.ReadFull(rand.Reader, data)
+	_, err := io.ReadFull(cryptorand.Reader, data)
 	require.NoError(t, err)
 
 	n, err := pw.Write(data)
@@ -453,7 +532,7 @@ func TestBufPipe_write_close_error(t *testing.T) {
 	pr, pw := xio.BufPipe(1024, 1024*1024, storage)
 
 	data := make([]byte, 1024)
-	_, err := io.ReadFull(rand.Reader, data)
+	_, err := io.ReadFull(cryptorand.Reader, data)
 	require.NoError(t, err)
 
 	n, err := pw.Write(data)
@@ -481,7 +560,7 @@ func TestBufPipe_write_close_error_async(t *testing.T) {
 	pr, pw := xio.BufPipe(1024, 1024*1024, storage)
 
 	data := make([]byte, 1024)
-	_, err := io.ReadFull(rand.Reader, data)
+	_, err := io.ReadFull(cryptorand.Reader, data)
 	require.NoError(t, err)
 
 	n, err := pw.Write(data)
@@ -513,6 +592,7 @@ func TestBufPipe_write_close_error_async(t *testing.T) {
 		err := pw.CloseWithError(errTest)
 		assert.NoError(t, err)
 	}()
+
 	n, err = pr.Read(p)
 	if err != io.EOF && err != errTest {
 		t.Fatalf("expected EOF or errTest, got %v", err)
@@ -526,7 +606,7 @@ func TestBufPipe_read_close_error_async(t *testing.T) {
 	pr, pw := xio.BufPipe(1024, 1024*1024, storage)
 
 	data := make([]byte, 1024)
-	_, err := io.ReadFull(rand.Reader, data)
+	_, err := io.ReadFull(cryptorand.Reader, data)
 	require.NoError(t, err)
 
 	n, err := pw.Write(data)
@@ -549,8 +629,9 @@ func TestBufPipe_read_close_error_async(t *testing.T) {
 		err := pr.CloseWithError(errTest)
 		assert.NoError(t, err)
 	}()
+
 	n, err = pr.Read(p)
-	require.Equal(t, errTest, err)
+	require.Equal(t, io.ErrClosedPipe, err)
 	require.Equal(t, 0, n)
 	<-done
 

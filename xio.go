@@ -10,6 +10,8 @@ const DefaultBlockSize = 1 * 1024 * 1024
 
 const debug = false
 
+const maxConsecutiveEmptyReads = 100
+
 // ErrNoSpaceLeft is returned when there is no space left in the underlying storage.
 var ErrNoSpaceLeft = errors.New("no space left")
 

@@ -1,11 +1,13 @@
 package xio_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"fmt"
 	"io"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/ozanh/xio"
@@ -18,17 +20,26 @@ func ExampleBufPipe_example1() {
 	storage := xio.NewBlockStorageBuffer(blockSize, storageSize)
 	pr, pw := xio.BufPipe(blockSize, storageSize, storage)
 
+	var wg sync.WaitGroup
+	wg.Add(1)
 	go func() {
-		pw.Write([]byte("hello"))
-		pw.Close()
+		defer wg.Done()
+
+		_, err := pw.Write([]byte("hello"))
+		if err != nil {
+			panic(err)
+		}
+		_ = pw.Close()
 	}()
 
-	buf := make([]byte, 1024)
-	n, err := pr.Read(buf)
-	if err != nil {
-		panic(err)
-	}
-	fmt.Printf("%s", buf[:n])
+	buf := bytes.NewBuffer(nil)
+
+	_, err := io.Copy(buf, pr)
+	_ = pr.CloseWithError(err)
+
+	wg.Wait()
+
+	fmt.Printf("%s", buf.Bytes())
 
 	// Output: hello
 }
@@ -42,14 +53,14 @@ func ExampleBufPipe_example2() {
 
 	go func() {
 		src := io.LimitReader(rand.Reader, storageSize)
+
 		_, err := io.Copy(pw, src)
-		pw.CloseWithError(err)
+		_ = pw.CloseWithError(err)
 	}()
 
 	n, err := io.Copy(io.Discard, pr)
-	if err != nil {
-		panic(err)
-	}
+	_ = pr.CloseWithError(err)
+
 	fmt.Printf("%d", n)
 
 	// Output: 10485760
@@ -62,10 +73,16 @@ func ExampleBufPipe_example3() {
 	storage := xio.NewBlockStorageBuffer(blockSize, storageSize)
 	pr, pw := xio.BufPipe(blockSize, storageSize, storage)
 
+	var wg sync.WaitGroup
+	wg.Add(1)
+
 	go func() {
+		defer wg.Done()
+
 		src := io.LimitReader(rand.Reader, storageSize)
+
 		_, err := io.Copy(pw, src)
-		pw.CloseWithError(err)
+		_ = pw.CloseWithError(err)
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -76,18 +93,18 @@ func ExampleBufPipe_example3() {
 	go func() {
 		select {
 		case <-ctx.Done():
-			pw.CloseWithError(ctx.Err())
+			_ = pw.CloseWithError(ctx.Err())
 		case <-done:
 		}
 	}()
 
 	n, err := io.Copy(io.Discard, pr)
+	_ = pr.CloseWithError(err)
 
 	close(done)
 
-	if err != nil {
-		panic(err)
-	}
+	wg.Wait()
+
 	fmt.Printf("%d", n)
 
 	// Output: 10485760
@@ -113,8 +130,9 @@ func ExampleBufPipe_example4() {
 
 	go func() {
 		src := io.LimitReader(rand.Reader, 40_000_000)
+
 		_, err := io.Copy(pw, src)
-		pw.CloseWithError(err)
+		_ = pw.CloseWithError(err)
 	}()
 
 	n, err := io.Copy(io.Discard, pr)
