@@ -2,7 +2,10 @@ module github.com/ozanh/xio
 
 go 1.20
 
-require github.com/stretchr/testify v1.10.0
+require (
+	github.com/elastic/go-freelru v0.16.0
+	github.com/stretchr/testify v1.10.0
+)
 
 require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
