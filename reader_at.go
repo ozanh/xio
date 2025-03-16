@@ -137,9 +137,9 @@ func (lra *LruReaderAt[T]) ReadAt(p []byte, offset int64) (int, error) {
 
 	if debug {
 		println(
-			lra, ": offset: ", offset, ", blockIndex: ", blockIndex,
-			", blockOffset: ", blockOffset, ", blockStart: ", blockStart,
-			" blockSize: ", lra.blockSize,
+			"lra:", lra, ", offset:", offset, ", blockIndex:", blockIndex,
+			", blockOffset:", blockOffset, ", blockStart:", blockStart,
+			", blockSize:", lra.blockSize, ", len(p):", len(p),
 		)
 	}
 
@@ -191,9 +191,10 @@ func (lra *LruReaderAt[T]) ReadAt(p []byte, offset int64) (int, error) {
 
 		if debug {
 			println(
-				lra, ": blockIndex: ", blockIndex, ", blockStart: ",
-				blockStart, ", nRead: ", nRead, ", readErr: ", err,
-				" readBufSize: ", len(readBuf),
+				"lra:", lra, ", blockIndex:", blockIndex, ", blockStart:",
+				blockStart, ", nRead:", nRead, ", readErr:", errString(err),
+				", readBufSize:", len(readBuf), ", totalRead:", totalRead,
+				", remainingSize:", len(remaining),
 			)
 		}
 		if nRead < 0 {
@@ -255,6 +256,9 @@ func (lra *LruReaderAt[T]) ReadAt(p []byte, offset int64) (int, error) {
 			if err == io.EOF {
 				lra.eofIndex = blockIndex
 				lra.cache.Add(blockIndex, readBuf[:nRead])
+				if n < (nRead - blockOffset) {
+					err = nil
+				}
 			} else if nRead == lra.blockSize {
 				lra.cache.Add(blockIndex, readBuf)
 			} else {
@@ -350,4 +354,11 @@ func lruHash(key uint64) uint32 {
 	h = (h ^ uint32(b[6])) * prime32
 	h = (h ^ uint32(b[7])) * prime32
 	return h
+}
+
+func errString(err error) string {
+	if err == nil {
+		return "<nil>"
+	}
+	return err.Error()
 }

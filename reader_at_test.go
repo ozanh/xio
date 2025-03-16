@@ -199,6 +199,20 @@ func TestLruReaderAt(t *testing.T) {
 				{sz: 15, off: 90, el: errIfEofNil, er: errIfEofNil},
 			},
 		},
+		{
+			name: "no eof when read more to cache",
+			readerFunc: func() io.ReaderAt {
+				autoGrow := false
+				sb := xio.NewStorageBuffer(make([]byte, 1000), autoGrow)
+				mustRandFillWriterAt(sb, sb.Len())
+				return sb
+			},
+			blockSize: 110,
+			cacheSize: 3,
+			reads: []readersAtCase{
+				{sz: 49, off: 950, el: nil, er: nil},
+			},
+		},
 	}
 
 	for _, tt := range testCases {
