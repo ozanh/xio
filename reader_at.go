@@ -13,6 +13,22 @@ import (
 
 var errNegativeReadAt = errors.New("xio: reader at returned negative count")
 
+// LruReaderAt caches blocks from an io.ReaderAt into an LRU cache.
+// It is safe for concurrent use.
+
+type LruReaderAt[T io.ReaderAt] struct {
+	reader    T
+	cache     *freelru.LRU[uint64, []byte]
+	pool      *sync.Pool
+	blockSize int
+	shift     uint
+	mask      int64
+	mu        sync.Mutex
+	eofIndex  uint64
+	metrics   lruReaderAtMetrics
+}
+
+// LruReaderAtMetrics contains the metrics of an LruReaderAt.
 type LruReaderAtMetrics struct {
 	CacheInserts    uint64
 	CacheCollisions uint64
@@ -27,21 +43,6 @@ type LruReaderAtMetrics struct {
 type lruReaderAtMetrics struct {
 	cacheHitBytes uint64
 	poolAllocs    uint64
-}
-
-// LruReaderAt caches blocks from an io.ReaderAt into an LRU cache.
-// It is safe for concurrent use.
-
-type LruReaderAt[T io.ReaderAt] struct {
-	reader    T
-	cache     *freelru.LRU[uint64, []byte]
-	pool      *sync.Pool
-	blockSize int
-	shift     uint
-	mask      int64
-	mu        sync.Mutex
-	eofIndex  uint64
-	metrics   lruReaderAtMetrics
 }
 
 // NewLruReaderAt creates a new CachingReaderAt with the given reader, blockSize, and cacheSize.
@@ -75,7 +76,7 @@ func NewLruReaderAt[T io.ReaderAt](reader T, blockSize, cacheSize int) (*LruRead
 		return &b
 	}
 
-	cache.SetOnEvict(func(_ uint64, c []byte) { lra.putBuffer(c) })
+	cache.SetOnEvict(func(_ uint64, v []byte) { lra.putBuffer(v) })
 
 	if bits.OnesCount32(uint32(blockSize)) == 1 {
 		lra.shift = uint(bits.TrailingZeros32(uint32(blockSize)))
