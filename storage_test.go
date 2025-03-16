@@ -291,8 +291,8 @@ func TestBlockStorageBuffer_errors(t *testing.T) {
 			t.Fatalf("Expected to read 0 bytes, but read %d", n)
 		}
 
-		if !strings.Contains(err.Error(), "invalid offset") {
-			t.Fatalf("Expected invalid offset error, but got %v", err)
+		if !strings.Contains(err.Error(), "negative offset") {
+			t.Fatalf("Expected negative offset error, but got %v", err)
 		}
 	})
 
@@ -308,8 +308,8 @@ func TestBlockStorageBuffer_errors(t *testing.T) {
 			t.Fatalf("Expected to write 0 bytes, but wrote %d", n)
 		}
 
-		if !strings.Contains(err.Error(), "invalid offset") {
-			t.Fatalf("Expected invalid offset error, but got %v", err)
+		if !strings.Contains(err.Error(), "negative offset") {
+			t.Fatalf("Expected negative offset error, but got %v", err)
 		}
 	})
 

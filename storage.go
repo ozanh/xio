@@ -47,7 +47,7 @@ func (bs *BlockStorageBuffer) ReadAt(p []byte, off int64) (n int, err error) {
 		return
 	}
 	if off < 0 {
-		err = errors.New("invalid offset")
+		err = errors.New("xio: BlockStorageBuffer: negative offset")
 		return
 	}
 
@@ -100,7 +100,7 @@ func (bs *BlockStorageBuffer) WriteAt(p []byte, off int64) (n int, err error) {
 		return
 	}
 	if off < 0 {
-		err = errors.New("invalid offset")
+		err = errors.New("xio: BlockStorageBuffer: negative offset")
 		return
 	}
 
@@ -162,6 +162,10 @@ func (s *StorageBuffer) ReadAt(p []byte, off int64) (int, error) {
 	s.rwmu.RLock()
 	defer s.rwmu.RUnlock()
 
+	if off < 0 {
+		return 0, errors.New("xio: StorageBuffer: negative offset")
+	}
+
 	if off >= int64(len(s.buf)) {
 		return 0, io.EOF
 	}
@@ -179,6 +183,10 @@ func (s *StorageBuffer) ReadAt(p []byte, off int64) (int, error) {
 func (s *StorageBuffer) WriteAt(p []byte, off int64) (int, error) {
 	s.rwmu.Lock()
 	defer s.rwmu.Unlock()
+
+	if off < 0 {
+		return 0, errors.New("xio: StorageBuffer: negative offset")
+	}
 
 	if s.autoGrow {
 		explen := off + int64(len(p))
