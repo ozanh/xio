@@ -6,8 +6,10 @@ import (
 	"errors"
 	"io"
 	"math"
+	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/ozanh/xio"
@@ -283,14 +285,15 @@ func TestLruReaderAt_edge_cases(t *testing.T) {
 		require.Error(t, err)
 	})
 
-	t.Run("negative offset is EOF", func(t *testing.T) {
+	t.Run("negative offset", func(t *testing.T) {
 		lra, err := xio.NewLruReaderAt(io.ReaderAt(nil), 1, 1)
 		require.NoError(t, err)
 
 		buf := make([]byte, 1)
 		n, err := lra.ReadAt(buf, -1)
 		require.Equal(t, 0, n)
-		require.Equal(t, io.EOF, err)
+		require.NotNil(t, err)
+		require.Contains(t, err.Error(), "negative offset")
 
 		m := lra.Metrics()
 		require.Zero(t, m)
@@ -520,4 +523,32 @@ func TestLruReaderAt_caching(t *testing.T) {
 		m = lra.Metrics()
 		require.Zero(t, m)
 	})
+}
+
+func TestLruReaderAt_concurrency(t *testing.T) {
+	r := xio.NewStorageBuffer(make([]byte, 1000), false)
+
+	lra, err := xio.NewLruReaderAt(r, 10, 20)
+	require.NoError(t, err)
+
+	const concurrency = 10
+	const iterations = 100
+
+	var wg sync.WaitGroup
+	wg.Add(concurrency)
+
+	for i := 0; i < concurrency; i++ {
+		go func() {
+			defer wg.Done()
+
+			for j := 0; j < iterations; j++ {
+				buf := make([]byte, 1000)
+				n, err := lra.ReadAt(buf, 0)
+				assert.Equal(t, r.Len(), n)
+				assert.Nil(t, err)
+			}
+		}()
+	}
+
+	wg.Wait()
 }

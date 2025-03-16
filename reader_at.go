@@ -115,7 +115,7 @@ func (lra *LruReaderAt[T]) Purge() {
 // from the underlying reader.
 func (lra *LruReaderAt[T]) ReadAt(p []byte, offset int64) (int, error) {
 	if offset < 0 {
-		return 0, io.EOF
+		return 0, errors.New("xio: LruReaderAt: negative offset")
 	}
 	if len(p) == 0 {
 		return 0, nil
