@@ -143,3 +143,40 @@ func ExampleBufPipe_example4() {
 
 	// Output: 40000000
 }
+
+func ExampleLruReaderAt_simple() {
+	// Simple example of using LruReaderAt with xio.StorageBuffer.
+	// Any io.ReaderAt can be used as the underlying reader.
+
+	const helloWorld = "Hello, World!"
+
+	rw := xio.NewStorageBuffer(make([]byte, 1024), false)
+	n, err := rw.WriteAt([]byte(helloWorld), 0)
+	if err != nil {
+		panic(err)
+	}
+	if n != len(helloWorld) {
+		panic("write failed")
+	}
+
+	const blockSize = 512
+	const cacheSize = 10
+
+	lruReader, err := xio.NewLruReaderAt(rw, blockSize, cacheSize)
+	if err != nil {
+		panic(err)
+	}
+
+	buf := make([]byte, len(helloWorld))
+	n, err = lruReader.ReadAt(buf, 0)
+	if err != nil {
+		panic(err)
+	}
+	if n != len(helloWorld) {
+		panic("read failed")
+	}
+
+	fmt.Printf("%s\n", buf)
+
+	// Output: Hello, World!
+}

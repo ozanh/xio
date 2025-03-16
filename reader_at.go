@@ -13,15 +13,20 @@ import (
 
 var errNegativeReadAt = errors.New("xio: reader at returned negative count")
 
-// LruReaderAt caches blocks from an io.ReaderAt into an LRU cache.
+// LruReaderAt wraps an io.ReaderAt and caches its data in an LRU cache.
+// It is designed for reading random offsets efficiently, making it suitable
+// for scenarios where repeated reads from non-contiguous regions occur.
+// Use NewLruReaderAt to create an instance for your underlying reader.
+// Underlying reader should not be modified while the LruReaderAt is in use to
+// avoid data corruption.
+//
 // It is safe for concurrent use.
-
 type LruReaderAt[T io.ReaderAt] struct {
 	reader    T
 	cache     *freelru.LRU[uint64, []byte]
 	pool      *sync.Pool
 	blockSize int
-	shift     uint
+	shift     uint32
 	mask      int64
 	mu        sync.Mutex
 	eofIndex  uint64
@@ -46,14 +51,23 @@ type lruReaderAtMetrics struct {
 }
 
 // NewLruReaderAt creates a new CachingReaderAt with the given reader, blockSize, and cacheSize.
-// blockSize should be a power of 2 for optimal performance.
+// blockSize and cacheSize should be a power of 2 for better performance.
+// blockSize and cacheSize must be greater than 0.
+// blockSize and cacheSize must be less than MaxUint32.
 func NewLruReaderAt[T io.ReaderAt](reader T, blockSize, cacheSize int) (*LruReaderAt[T], error) {
+	const maxUint32 = 1<<32 - 1
+
 	if blockSize <= 0 {
 		return nil, errors.New("xio: LruReaderAt: blockSize must be greater than 0")
 	}
+	if uint64(blockSize) >= maxUint32 {
+		return nil, errors.New("xio: LruReaderAt: blockSize must be less than MaxUint32")
+	}
+
 	if cacheSize <= 0 {
 		return nil, errors.New("xio: LruReaderAt: cacheSize must be greater than 0")
-	} else if uint64(cacheSize) >= uint64(1<<32-1) {
+	}
+	if uint64(cacheSize) >= maxUint32 {
 		return nil, errors.New("xio: LruReaderAt: cacheSize must be less than MaxUint32")
 	}
 
@@ -79,7 +93,7 @@ func NewLruReaderAt[T io.ReaderAt](reader T, blockSize, cacheSize int) (*LruRead
 	cache.SetOnEvict(func(_ uint64, v []byte) { lra.putBuffer(v) })
 
 	if bits.OnesCount32(uint32(blockSize)) == 1 {
-		lra.shift = uint(bits.TrailingZeros32(uint32(blockSize)))
+		lra.shift = uint32(bits.TrailingZeros32(uint32(blockSize)))
 		lra.mask = int64(blockSize) - 1
 	}
 
