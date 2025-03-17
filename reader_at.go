@@ -29,8 +29,9 @@ type LruReaderAt[T io.ReaderAt] struct {
 	shift     uint32
 	mask      int64
 	mu        sync.Mutex
-	eofIndex  uint64
 	metrics   lruReaderAtMetrics
+	eofIndex  uint64
+	eofSeen   bool
 }
 
 // LruReaderAtMetrics contains the metrics of an LruReaderAt.
@@ -106,8 +107,9 @@ func (lra *LruReaderAt[T]) Purge() {
 	defer lra.mu.Unlock()
 
 	lra.cache.Purge()
-	lra.eofIndex = 0
 	lra.metrics = lruReaderAtMetrics{}
+	lra.eofIndex = 0
+	lra.eofSeen = false
 }
 
 // ReadAt reads len(p) bytes into p starting at offset, using the cache where possible.
@@ -145,6 +147,7 @@ func (lra *LruReaderAt[T]) ReadAt(p []byte, offset int64) (int, error) {
 
 	totalRead := 0
 	remaining := p
+	twoBlocks := 2 * int64(lra.blockSize)
 
 	lra.mu.Lock()
 	defer lra.mu.Unlock()
@@ -157,14 +160,15 @@ func (lra *LruReaderAt[T]) ReadAt(p []byte, offset int64) (int, error) {
 			remaining = remaining[n:]
 			lra.metrics.cacheHitBytes += uint64(n)
 
-			if totalRead == len(p) {
-				return totalRead, nil
-			}
-
-			if blockIndex == lra.eofIndex &&
-				len(blockBuf) != lra.blockSize {
+			if lra.eofSeen &&
+				blockIndex == lra.eofIndex &&
+				n == len(blockBuf)-blockOffset {
 
 				return totalRead, io.EOF
+			}
+
+			if totalRead == len(p) {
+				return totalRead, nil
 			}
 
 			blockIndex++
@@ -176,7 +180,7 @@ func (lra *LruReaderAt[T]) ReadAt(p []byte, offset int64) (int, error) {
 		var readBuf []byte
 		var direct bool
 
-		if blockOffset == 0 && len(remaining) >= 2*lra.blockSize {
+		if blockOffset == 0 && int64(len(remaining)) >= twoBlocks {
 			count := lra.countBlocksBeforeCacheHit(len(remaining), blockIndex+1)
 			if count > 1 {
 				readBuf = remaining[:count*lra.blockSize]
@@ -209,6 +213,7 @@ func (lra *LruReaderAt[T]) ReadAt(p []byte, offset int64) (int, error) {
 
 			if err == io.EOF {
 				lra.eofIndex = blockIndex
+				lra.eofSeen = true
 				lra.cache.Add(blockIndex, readBuf[:nRead])
 			} else {
 				lra.putBuffer(readBuf)
@@ -244,6 +249,7 @@ func (lra *LruReaderAt[T]) ReadAt(p []byte, offset int64) (int, error) {
 
 					if err == io.EOF {
 						lra.eofIndex = blockIndex
+						lra.eofSeen = true
 					}
 				}
 			}
@@ -254,8 +260,11 @@ func (lra *LruReaderAt[T]) ReadAt(p []byte, offset int64) (int, error) {
 			remaining = remaining[n:]
 
 			if err == io.EOF {
-				lra.eofIndex = blockIndex
 				lra.cache.Add(blockIndex, readBuf[:nRead])
+
+				lra.eofIndex = blockIndex
+				lra.eofSeen = true
+
 				if n < (nRead - blockOffset) {
 					err = nil
 				}

@@ -3,7 +3,6 @@ package xio_test
 import (
 	"bytes"
 	"crypto/rand"
-	"errors"
 	"io"
 	"math"
 	"sync"
@@ -14,8 +13,6 @@ import (
 
 	"github.com/ozanh/xio"
 )
-
-var errIfEofNil = errors.New("eof or nil")
 
 func TestLruReaderAt(t *testing.T) {
 	testCases := []struct {
@@ -59,7 +56,7 @@ func TestLruReaderAt(t *testing.T) {
 				{sz: 10, off: 60},
 				{sz: 10, off: 70},
 				{sz: 10, off: 80},
-				{sz: 10, off: 90, el: errIfEofNil, er: errIfEofNil},
+				{sz: 10, off: 90, er: io.EOF},
 				{sz: 10, off: 100, el: io.EOF, er: io.EOF},
 				{sz: 10, off: 101, el: io.EOF, er: io.EOF},
 			},
@@ -78,7 +75,7 @@ func TestLruReaderAt(t *testing.T) {
 				{sz: 11, off: 0},
 				{sz: 22, off: 11},
 				{sz: 66, off: 33},
-				{sz: 33, off: 99, el: errIfEofNil, er: errIfEofNil},
+				{sz: 33, off: 99, el: io.EOF, er: io.EOF},
 				{sz: 33, off: 100, el: io.EOF, er: io.EOF},
 				{sz: 33, off: 101, el: io.EOF, er: io.EOF},
 			},
@@ -97,7 +94,7 @@ func TestLruReaderAt(t *testing.T) {
 				{sz: 11, off: 0},
 				{sz: 22, off: 11},
 				{sz: 66, off: 33},
-				{sz: 3, off: 99, el: errIfEofNil, er: errIfEofNil},
+				{sz: 3, off: 99, el: io.EOF, er: io.EOF},
 				{sz: 1, off: 100, el: io.EOF, er: io.EOF},
 				{sz: 1, off: 101, el: io.EOF, er: io.EOF},
 			},
@@ -116,7 +113,7 @@ func TestLruReaderAt(t *testing.T) {
 				{sz: 256, off: 0},
 				{sz: 256, off: 256},
 				{sz: 256, off: 512},
-				{sz: 256, off: 768, el: errIfEofNil, er: errIfEofNil},
+				{sz: 256, off: 768, er: io.EOF},
 				{sz: 256, off: 1024, el: io.EOF, er: io.EOF},
 				{sz: 256, off: 1025, el: io.EOF, er: io.EOF},
 			},
@@ -165,8 +162,10 @@ func TestLruReaderAt(t *testing.T) {
 			blockSize: 15,
 			cacheSize: 3,
 			reads: []readersAtCase{
-				{sz: 10, off: 91, el: errIfEofNil, er: errIfEofNil},
-				{sz: 10, off: 91, el: errIfEofNil, er: errIfEofNil},
+				{sz: 10, off: 91, el: io.EOF, er: io.EOF},
+				{sz: 10, off: 91, el: io.EOF, er: io.EOF},
+				{sz: 3, off: 91},
+				{sz: 100, off: 91, el: io.EOF, er: io.EOF},
 			},
 		},
 		{
@@ -177,26 +176,12 @@ func TestLruReaderAt(t *testing.T) {
 				mustRandFillWriterAt(sb, sb.Len())
 				return sb
 			},
-			blockSize: 15,
+			blockSize: 20,
 			cacheSize: 3,
 			reads: []readersAtCase{
-				{sz: 10, off: 99, el: errIfEofNil, er: errIfEofNil},
-				{sz: 10, off: 99, el: errIfEofNil, er: errIfEofNil},
-			},
-		},
-		{
-			name: "eof cache 3",
-			readerFunc: func() io.ReaderAt {
-				autoGrow := false
-				sb := xio.NewStorageBuffer(make([]byte, 100), autoGrow)
-				mustRandFillWriterAt(sb, sb.Len())
-				return sb
-			},
-			blockSize: 15,
-			cacheSize: 3,
-			reads: []readersAtCase{
-				{sz: 15, off: 90, el: errIfEofNil, er: errIfEofNil},
-				{sz: 15, off: 90, el: errIfEofNil, er: errIfEofNil},
+				{sz: 15, off: 90, el: io.EOF, er: io.EOF},
+				{sz: 15, off: 90, el: io.EOF, er: io.EOF},
+				{sz: 5, off: 90},
 			},
 		},
 		{
@@ -210,7 +195,23 @@ func TestLruReaderAt(t *testing.T) {
 			blockSize: 110,
 			cacheSize: 3,
 			reads: []readersAtCase{
-				{sz: 49, off: 950, el: nil, er: nil},
+				{sz: 49, off: 950},
+			},
+		},
+		{
+			name: "cached eof block",
+			readerFunc: func() io.ReaderAt {
+				autoGrow := false
+				sb := xio.NewStorageBuffer(make([]byte, 999), autoGrow)
+				mustRandFillWriterAt(sb, sb.Len())
+				return sb
+			},
+			blockSize: 100,
+			cacheSize: 3,
+			reads: []readersAtCase{
+				{sz: 99, off: 902, el: io.EOF, er: io.EOF},
+				{sz: 30, off: 950},
+				{sz: 100, off: 901, el: io.EOF, er: io.EOF},
 			},
 		},
 	}
@@ -253,17 +254,11 @@ func testReadersAt(t *testing.T, left, right io.ReaderAt, cases []readersAtCase)
 		n1, errLeft := left.ReadAt(bufLeft, c.off)
 		n2, errRight := right.ReadAt(bufRight, c.off)
 
-		if c.el == errIfEofNil && errLeft == io.EOF {
-			errLeft = nil
-		}
-		if c.er == errIfEofNil && errRight == io.EOF {
-			errRight = nil
-		}
-
 		require.Equal(t, n1, n2, "n: case %d", i)
 		require.Equal(t, bufLeft, bufRight, "buf: case %d", i)
 
-		require.Equal(t, errLeft, errRight, "err: case %d", i)
+		require.Equal(t, c.el, errLeft, "err-left: case %d", i)
+		require.Equal(t, c.er, errRight, "err-right: case %d", i)
 	}
 
 	err := xio.CompareReadersData(
