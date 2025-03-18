@@ -183,16 +183,15 @@ func ExampleLruReaderAt_simple() {
 }
 
 func ExampleCmpReadersData() {
-	b := make([]byte, 0, 1000*1000)
-	buf := bytes.NewBuffer(b)
+	b := make([]byte, 1000*1000)
 
-	_, err := io.CopyN(buf, rand.Reader, int64(cap(b)))
+	_, err := xio.ReadFill(rand.Reader, b)
 	if err != nil {
 		panic(err)
 	}
 
-	r1 := bytes.NewReader(buf.Bytes())
-	r2 := bufio.NewReader(bytes.NewReader(buf.Bytes()))
+	r1 := bytes.NewReader(b)
+	r2 := bufio.NewReader(bytes.NewReader(b))
 
 	err = xio.CmpReadersData(r1, r2)
 	if err != nil {

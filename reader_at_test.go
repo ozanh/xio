@@ -56,7 +56,8 @@ func TestLruReaderAt(t *testing.T) {
 				{sz: 10, off: 60},
 				{sz: 10, off: 70},
 				{sz: 10, off: 80},
-				{sz: 10, off: 90, er: io.EOF},
+				{sz: 10, off: 90},
+				{sz: 10, off: 90},
 				{sz: 10, off: 100, el: io.EOF, er: io.EOF},
 				{sz: 10, off: 101, el: io.EOF, er: io.EOF},
 			},
@@ -113,7 +114,8 @@ func TestLruReaderAt(t *testing.T) {
 				{sz: 256, off: 0},
 				{sz: 256, off: 256},
 				{sz: 256, off: 512},
-				{sz: 256, off: 768, er: io.EOF},
+				{sz: 256, off: 768},
+				{sz: 256, off: 768},
 				{sz: 256, off: 1024, el: io.EOF, er: io.EOF},
 				{sz: 256, off: 1025, el: io.EOF, er: io.EOF},
 			},
@@ -398,7 +400,7 @@ func TestLruReaderAt_edge_cases(t *testing.T) {
 		buf := make([]byte, 800)
 		n, err := lra.ReadAt(buf, 0)
 		require.Equal(t, r.Len(), n)
-		require.Equal(t, io.EOF, err)
+		require.Nil(t, err)
 
 		n, err = lra.ReadAt(buf[:100], 500)
 		require.Equal(t, 100, n)

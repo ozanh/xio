@@ -112,9 +112,17 @@ func (lra *LruReaderAt[T]) Purge() {
 	lra.eofSeen = false
 }
 
-// ReadAt reads len(p) bytes into p starting at offset, using the cache where possible.
+// ReadAt implements the io.ReaderAt and reads len(p) bytes into p starting at
+// offset, using the cache where possible.
 // If a cached block doesn’t fully satisfy the request, it reads the remainder
 // from the underlying reader.
+//
+// It returns ErrShortRead if the read operation could not read the requested
+// number of bytes and the underlying reader did not return io.EOF or other
+// error.
+//
+// If number of read bytes is equal to the len(p), it always returns nil error
+// if EOF was reached.
 func (lra *LruReaderAt[T]) ReadAt(p []byte, offset int64) (int, error) {
 	if offset < 0 {
 		return 0, errors.New("xio: LruReaderAt: negative offset")
@@ -160,15 +168,15 @@ func (lra *LruReaderAt[T]) ReadAt(p []byte, offset int64) (int, error) {
 			remaining = remaining[n:]
 			lra.metrics.cacheHitBytes += uint64(n)
 
+			if totalRead == len(p) {
+				return totalRead, nil
+			}
+
 			if lra.eofSeen &&
 				blockIndex == lra.eofIndex &&
 				n == len(blockBuf)-blockOffset {
 
-				return totalRead, io.EOF
-			}
-
-			if totalRead == len(p) {
-				return totalRead, nil
+				return readAtResult(len(p), totalRead, io.EOF)
 			}
 
 			blockIndex++
@@ -284,7 +292,7 @@ func (lra *LruReaderAt[T]) ReadAt(p []byte, offset int64) (int, error) {
 		blockStart += int64(lra.blockSize)
 	}
 
-	return totalRead, nil
+	return readAtResult(len(p), totalRead, nil)
 }
 
 func (lra *LruReaderAt[T]) countBlocksBeforeCacheHit(bufSize int, nextIndex uint64) int {
@@ -339,8 +347,12 @@ func (lra *LruReaderAt[T]) putBuffer(b []byte) {
 }
 
 func readAtResult(expectedRead, totalRead int, err error) (int, error) {
-	if err == nil && expectedRead != totalRead {
-		err = ErrShortRead
+	if expectedRead != totalRead {
+		if err == nil {
+			err = ErrShortRead
+		}
+	} else if err == io.EOF {
+		err = nil
 	}
 	return totalRead, err
 }
