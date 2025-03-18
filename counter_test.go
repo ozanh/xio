@@ -55,8 +55,8 @@ func TestReadDataCounter(t *testing.T) {
 		},
 		{
 			name:    "error case",
-			reader:  &xio.ErrOrEofReader{Err: xio.ErrComparisonReadError},
-			wantErr: xio.ErrComparisonReadError,
+			reader:  &xio.ErrOrEofReader{Err: xio.ErrCmpReadError},
+			wantErr: xio.ErrCmpReadError,
 		},
 	}
 
@@ -101,8 +101,8 @@ func TestReadDataAtomicCounter(t *testing.T) {
 		},
 		{
 			name:    "error case",
-			reader:  &xio.ErrOrEofReader{Err: xio.ErrComparisonReadError},
-			wantErr: xio.ErrComparisonReadError,
+			reader:  &xio.ErrOrEofReader{Err: xio.ErrCmpReadError},
+			wantErr: xio.ErrCmpReadError,
 		},
 	}
 

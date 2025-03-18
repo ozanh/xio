@@ -261,11 +261,11 @@ func testReadersAt(t *testing.T, left, right io.ReaderAt, cases []readersAtCase)
 		require.Equal(t, c.er, errRight, "err-right: case %d", i)
 	}
 
-	err := xio.CompareReadersData(
+	err := xio.CmpReadersData(
 		io.NewSectionReader(left, 0, math.MaxInt64),
 		io.NewSectionReader(right, 0, math.MaxInt64),
 	)
-	require.NoError(t, err, "CompareReadersData")
+	require.NoError(t, err, "CmpReadersData")
 }
 
 func mustRandFillWriterAt(w io.WriterAt, size int) {
