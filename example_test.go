@@ -1,6 +1,7 @@
 package xio_test
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -179,4 +180,26 @@ func ExampleLruReaderAt_simple() {
 	fmt.Printf("%s\n", buf)
 
 	// Output: Hello, World!
+}
+
+func ExampleCmpReadersData() {
+	b := make([]byte, 0, 1000*1000)
+	buf := bytes.NewBuffer(b)
+
+	_, err := io.CopyN(buf, rand.Reader, int64(cap(b)))
+	if err != nil {
+		panic(err)
+	}
+
+	r1 := bytes.NewReader(buf.Bytes())
+	r2 := bufio.NewReader(bytes.NewReader(buf.Bytes()))
+
+	err = xio.CmpReadersData(r1, r2)
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println("Readers have equal data")
+
+	// Output: Readers have equal data
 }

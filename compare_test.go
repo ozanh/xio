@@ -12,7 +12,7 @@ import (
 	"github.com/ozanh/xio"
 )
 
-func TestCompareReadersDataWithBuffer(t *testing.T) {
+func TestCmpReadersDataWithBuffer(t *testing.T) {
 	newStringsReader := func(s string) func() io.Reader {
 		return func() io.Reader {
 			return strings.NewReader(s)
@@ -61,13 +61,13 @@ func TestCompareReadersDataWithBuffer(t *testing.T) {
 			name:      "different length",
 			leftFn:    newStringsReader("hello"),
 			rightFn:   newStringsReader("hello world"),
-			wantErrIs: xio.ErrComparisonByteCountMismatch,
+			wantErrIs: xio.ErrCmpByteCountMismatch,
 		},
 		{
 			name:      "different content same length",
 			leftFn:    newStringsReader("hello world"),
 			rightFn:   newStringsReader("hello earth"),
-			wantErrIs: xio.ErrComparisonDataMismatch,
+			wantErrIs: xio.ErrCmpDataMismatch,
 		},
 		{
 			name: "left reader error",
@@ -75,7 +75,7 @@ func TestCompareReadersDataWithBuffer(t *testing.T) {
 				&xio.ErrOrEofReader{Err: errors.New("left reader error")},
 			),
 			rightFn:   newStringsReader("data"),
-			wantErrIs: xio.ErrComparisonReadError,
+			wantErrIs: xio.ErrCmpReadError,
 		},
 		{
 			name:   "right reader error",
@@ -83,7 +83,7 @@ func TestCompareReadersDataWithBuffer(t *testing.T) {
 			rightFn: newAnyReader(
 				&xio.ErrOrEofReader{Err: errors.New("right reader error")},
 			),
-			wantErrIs: xio.ErrComparisonReadError,
+			wantErrIs: xio.ErrCmpReadError,
 		},
 	}
 
@@ -111,48 +111,44 @@ func TestCompareReadersDataWithBuffer(t *testing.T) {
 				leftrc := xio.NewReadDataCounter(tt.leftFn())
 				rightrc := xio.NewReadDataCounter(tt.rightFn())
 
-				err := xio.CompareReadersDataWithBuffer(leftrc, rightrc, buf)
+				err := xio.CmpReadersDataWithBuffer(leftrc, rightrc, buf)
 				if !errors.Is(err, tt.wantErrIs) {
-					t.Errorf("CompareReadersDataWithBuffer() error = %v, wantErr %v", err, tt.wantErrIs)
+					t.Errorf("CmpReadersDataWithBuffer() error = %v, wantErr %v", err, tt.wantErrIs)
 				}
 
 				leftCount, rightCount := leftrc.Count(), rightrc.Count()
 
 				if err == nil {
 					if leftCount != rightCount {
-						t.Errorf("CompareReadersDataWithBuffer() byte count mismatch = %d, want %d", leftCount, rightCount)
+						t.Errorf("CmpReadersDataWithBuffer() byte count mismatch = %d, want %d", leftCount, rightCount)
 					}
 					// Check if the readers are consumed completely.
 					n, err := leftrc.Read([]byte{0})
 					if n > 0 || err != io.EOF {
-						t.Errorf("CompareReadersDataWithBuffer() left reader not consumed completely. n=%d, err=%v", n, err)
+						t.Errorf("CmpReadersDataWithBuffer() left reader not consumed completely. n=%d, err=%v", n, err)
 					}
 
 					n, err = rightrc.Read([]byte{0})
 					if n > 0 || err != io.EOF {
-						t.Errorf("CompareReadersDataWithBuffer() right reader not consumed completely. n=%d, err=%v", n, err)
+						t.Errorf("CmpReadersDataWithBuffer() right reader not consumed completely. n=%d, err=%v", n, err)
 					}
 
 					return
 				}
 
-				cerr := err.(*xio.ReadersDataComparisonError)
+				cerr := err.(*xio.ReadersDataCmpError)
 
 				expectedMaxOffset := minU64(leftCount, rightCount)
 
 				if cerr.Offset < 0 || uint64(cerr.Offset) > expectedMaxOffset {
-					t.Errorf("CompareReadersDataWithBuffer() error offset = %d, want between 0 and %d", cerr.Offset, expectedMaxOffset)
-				}
-
-				if cerr.Err.Error() != err.Error() {
-					t.Errorf("ReadersDataComparisonError should return the underlying error message")
+					t.Errorf("CmpReadersDataWithBuffer() error offset = %d, want between 0 and %d", cerr.Offset, expectedMaxOffset)
 				}
 			})
 		}
 	}
 }
 
-func TestCompareReadersData(t *testing.T) {
+func TestCmpReadersData(t *testing.T) {
 	tests := []struct {
 		name    string
 		left    io.Reader
@@ -169,15 +165,15 @@ func TestCompareReadersData(t *testing.T) {
 			name:    "different data",
 			left:    strings.NewReader("test data"),
 			right:   strings.NewReader("other data"),
-			wantErr: xio.ErrComparisonDataMismatch,
+			wantErr: xio.ErrCmpDataMismatch,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := xio.CompareReadersData(tt.left, tt.right)
+			err := xio.CmpReadersData(tt.left, tt.right)
 			if !errors.Is(err, tt.wantErr) {
-				t.Errorf("CompareReadersData() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("CmpReadersData() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
 	}

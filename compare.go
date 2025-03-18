@@ -3,18 +3,19 @@ package xio
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 )
 
 var (
-	ErrComparisonReadError         = errors.New("read error")
-	ErrComparisonByteCountMismatch = errors.New("byte count mismatch")
-	ErrComparisonDataMismatch      = errors.New("data mismatch")
+	ErrCmpReadError         = errors.New("xio: compare: read error")
+	ErrCmpByteCountMismatch = errors.New("xio: compare: byte count mismatch")
+	ErrCmpDataMismatch      = errors.New("xio: compare: data mismatch")
 )
 
-// ReadersDataComparisonError is an error returned by CompareReadersData when
+// ReadersDataCmpError is an error returned by CmpReadersData when
 // the data read from the readers is not equal.
-type ReadersDataComparisonError struct {
+type ReadersDataCmpError struct {
 	Err        error
 	ErrLeft    error
 	ErrRight   error
@@ -23,29 +24,30 @@ type ReadersDataComparisonError struct {
 	Offset     int64
 }
 
-func (e *ReadersDataComparisonError) Error() string {
-	return e.Err.Error()
+func (e *ReadersDataCmpError) Error() string {
+	return fmt.Sprintf("%v: err-left: %v, err-right: %v, offset: %d",
+		e.Err, e.ErrLeft, e.ErrRight, e.Offset)
 }
 
-func (e *ReadersDataComparisonError) Unwrap() error {
+func (e *ReadersDataCmpError) Unwrap() error {
 	return e.Err
 }
 
-// CompareReadersData compares the data read from two readers.
+// CmpReadersData compares the data read from two readers.
 // It returns an error if the data read from the readers is not equal.
-// CompareReadersData reads data from the readers in chunks and compares the
+// CmpReadersData reads data from the readers in chunks and compares the
 // data in the chunks. If the data read from the readers is not equal, it
 // returns an error with the data read from the readers. The error is of type
-// *ReadersDataComparisonError.
-func CompareReadersData[T io.Reader](left, right T) error {
-	return CompareReadersDataWithBuffer(left, right, nil)
+// *ReadersDataCmpError.
+func CmpReadersData[T1, T2 io.Reader](left T1, right T2) error {
+	return CmpReadersDataWithBuffer(left, right, nil)
 }
 
-// CompareReadersDataWithBuffer is like CompareReadersData but accepts a buffer
+// CmpReadersDataWithBuffer is like CmpReadersData but accepts a buffer
 // to use for reading data from the readers. If the buffer is not provided, a
 // new buffer of size 64KB is used. Given buffer is split into two halves and
 // used for reading data from the readers.
-func CompareReadersDataWithBuffer[T io.Reader](left, right T, buffer []byte) error {
+func CmpReadersDataWithBuffer[T1, T2 io.Reader](left T1, right T2, buffer []byte) error {
 	if len(buffer) > 0 && len(buffer)%2 != 0 {
 		buffer = buffer[:len(buffer)-1]
 	}
@@ -77,18 +79,18 @@ func CompareReadersDataWithBuffer[T io.Reader](left, right T, buffer []byte) err
 		var err error
 
 		if err1 != nil || err2 != nil {
-			err = ErrComparisonReadError
+			err = ErrCmpReadError
 		} else if n1 != n2 {
-			err = ErrComparisonByteCountMismatch
+			err = ErrCmpByteCountMismatch
 		} else if !bytes.Equal(
 			buffer[:n1],
 			buffer[half:half+n2],
 		) {
-			err = ErrComparisonDataMismatch
+			err = ErrCmpDataMismatch
 		}
 
 		if err != nil {
-			return &ReadersDataComparisonError{
+			return &ReadersDataCmpError{
 				Err:        err,
 				ErrLeft:    err1,
 				ErrRight:   err2,

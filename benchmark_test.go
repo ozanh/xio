@@ -11,7 +11,7 @@ import (
 	"github.com/ozanh/xio"
 )
 
-func BenchmarkCompareReadersDataWithBuffer(b *testing.B) {
+func BenchmarkCmpReadersDataWithBuffer(b *testing.B) {
 	seed := time.Now().UnixNano()
 
 	leftData, err := io.ReadAll(
@@ -37,7 +37,7 @@ func BenchmarkCompareReadersDataWithBuffer(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		err := xio.CompareReadersDataWithBuffer(left, right, buf)
+		err := xio.CmpReadersDataWithBuffer(left, right, buf)
 		if err != nil {
 			b.Fatal(err)
 		}
