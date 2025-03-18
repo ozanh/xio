@@ -39,7 +39,7 @@ func (e *ReadersDataCmpError) Unwrap() error {
 // data in the chunks. If the data read from the readers is not equal, it
 // returns an error with the data read from the readers. The error is of type
 // *ReadersDataCmpError.
-func CmpReadersData[T1, T2 io.Reader](left T1, right T2) error {
+func CmpReadersData[L, R io.Reader](left L, right R) error {
 	return CmpReadersDataWithBuffer(left, right, nil)
 }
 
@@ -47,7 +47,7 @@ func CmpReadersData[T1, T2 io.Reader](left T1, right T2) error {
 // to use for reading data from the readers. If the buffer is not provided, a
 // new buffer of size 64KB is used. Given buffer is split into two halves and
 // used for reading data from the readers.
-func CmpReadersDataWithBuffer[T1, T2 io.Reader](left T1, right T2, buffer []byte) error {
+func CmpReadersDataWithBuffer[L, R io.Reader](left L, right R, buffer []byte) error {
 	if len(buffer) > 0 && len(buffer)%2 != 0 {
 		buffer = buffer[:len(buffer)-1]
 	}
