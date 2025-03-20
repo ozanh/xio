@@ -534,6 +534,48 @@ func TestLruReaderAt_caching(t *testing.T) {
 		m = lra.Metrics()
 		require.Zero(t, m)
 	})
+
+	t.Run("reset", func(t *testing.T) {
+		r := xio.NewStorageBuffer(make([]byte, 1000), false)
+
+		lra, err := xio.NewLruReaderAt(r, 500, 2)
+		require.NoError(t, err)
+
+		buf := make([]byte, 1000)
+		n, err := lra.ReadAt(buf, 0)
+		require.Equal(t, r.Len(), n)
+		require.Nil(t, err)
+
+		require.True(t, bytes.Equal(buf, r.Bytes()))
+
+		r2 := xio.NewStorageBuffer(make([]byte, 2000), false)
+		mustRandFillWriterAt(r2, r2.Len())
+
+		lra.Reset(r2)
+
+		m := lra.Metrics()
+		require.Zero(t, m)
+
+		buf = make([]byte, 2000)
+		n, err = lra.ReadAt(buf, 0)
+		require.Equal(t, r2.Len(), n)
+		require.Nil(t, err)
+
+		m = lra.Metrics()
+		require.NotZero(t, m)
+	})
+
+	t.Run("short read", func(t *testing.T) {
+		r := &shortReaderAt{}
+
+		lra, err := xio.NewLruReaderAt(r, 10, 2)
+		require.NoError(t, err)
+
+		buf := make([]byte, 1000)
+		n, err := lra.ReadAt(buf, 0)
+		require.Equal(t, xio.ErrShortRead, err)
+		require.Equal(t, 999, n)
+	})
 }
 
 func TestLruReaderAt_concurrency(t *testing.T) {
@@ -562,4 +604,10 @@ func TestLruReaderAt_concurrency(t *testing.T) {
 	}
 
 	wg.Wait()
+}
+
+type shortReaderAt struct{}
+
+func (s shortReaderAt) ReadAt(p []byte, _ int64) (int, error) {
+	return len(p) - 1, nil
 }
