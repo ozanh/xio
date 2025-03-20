@@ -18,14 +18,16 @@ var errNegativeReadAt = errors.New("xio: reader at returned negative count")
 // for scenarios where repeated reads from non-contiguous regions occur.
 // Use NewLruReaderAt to create an instance for your underlying reader.
 // Underlying reader should not be modified while the LruReaderAt is in use to
-// avoid data corruption.
+// avoid data inconsistency.
 //
-// It is safe for concurrent use.
+// It is safe for concurrent use, but method calls are synchronized with a
+// mutex.
 type LruReaderAt[T io.ReaderAt] struct {
 	reader    T
 	cache     *freelru.LRU[uint64, []byte]
 	pool      *sync.Pool
 	blockSize int
+	cacheSize int
 	shift     uint32
 	mask      int64
 	mu        sync.Mutex
@@ -44,6 +46,7 @@ type LruReaderAtMetrics struct {
 	CacheMisses     uint64
 	CacheHitBytes   uint64
 	PoolAllocs      uint64
+	CachedCount     uint64
 }
 
 type lruReaderAtMetrics struct {
@@ -82,6 +85,7 @@ func NewLruReaderAt[T io.ReaderAt](reader T, blockSize, cacheSize int) (*LruRead
 		cache:     cache,
 		pool:      &sync.Pool{},
 		blockSize: blockSize,
+		cacheSize: cacheSize,
 	}
 
 	lra.pool.New = func() any {
@@ -91,7 +95,14 @@ func NewLruReaderAt[T io.ReaderAt](reader T, blockSize, cacheSize int) (*LruRead
 		return &b
 	}
 
-	cache.SetOnEvict(func(_ uint64, v []byte) { lra.putBuffer(v) })
+	cache.SetOnEvict(func(k uint64, v []byte) {
+		// Mutex is already held by the caller.
+		if lra.eofSeen && k == lra.eofIndex {
+			lra.eofIndex = 0
+			lra.eofSeen = false
+		}
+		lra.putBuffer(v)
+	})
 
 	if bits.OnesCount32(uint32(blockSize)) == 1 {
 		lra.shift = uint32(bits.TrailingZeros32(uint32(blockSize)))
@@ -101,11 +112,25 @@ func NewLruReaderAt[T io.ReaderAt](reader T, blockSize, cacheSize int) (*LruRead
 	return lra, nil
 }
 
+// Reset resets the LruReaderAt with a new reader and purges the cache for
+// reuse.
+func (lra *LruReaderAt[T]) Reset(reader T) {
+	lra.mu.Lock()
+	defer lra.mu.Unlock()
+
+	lra.reader = reader
+	lra.purge()
+}
+
 // Purge purges the underlying lru cache, and resets the metrics.
 func (lra *LruReaderAt[T]) Purge() {
 	lra.mu.Lock()
 	defer lra.mu.Unlock()
 
+	lra.purge()
+}
+
+func (lra *LruReaderAt[T]) purge() {
 	lra.cache.Purge()
 	lra.metrics = lruReaderAtMetrics{}
 	lra.eofIndex = 0
@@ -123,13 +148,27 @@ func (lra *LruReaderAt[T]) Purge() {
 //
 // If number of read bytes is equal to the len(p), it always returns nil error
 // if EOF was reached.
-func (lra *LruReaderAt[T]) ReadAt(p []byte, offset int64) (int, error) {
+func (lra *LruReaderAt[T]) ReadAt(p []byte, offset int64) (n int, err error) {
 	if offset < 0 {
 		return 0, errors.New("xio: LruReaderAt: negative offset")
 	}
 	if len(p) == 0 {
 		return 0, nil
 	}
+
+	lra.mu.Lock()
+	defer lra.mu.Unlock()
+
+	n, err = lra.readAt(p, offset)
+
+	if len(p) == n && err == io.EOF {
+		err = nil
+	}
+
+	return
+}
+
+func (lra *LruReaderAt[T]) readAt(p []byte, offset int64) (int, error) {
 
 	var blockIndex uint64
 	var blockOffset int
@@ -155,17 +194,18 @@ func (lra *LruReaderAt[T]) ReadAt(p []byte, offset int64) (int, error) {
 
 	totalRead := 0
 	remaining := p
-	twoBlocks := 2 * int64(lra.blockSize)
 
-	lra.mu.Lock()
-	defer lra.mu.Unlock()
+	twoBlocks := 2 * int64(lra.blockSize)
 
 	for totalRead < len(p) {
 
-		if blockBuf, ok := lra.cache.Get(blockIndex); ok && blockOffset <= len(blockBuf) {
+		if blockBuf, ok := lra.cache.Get(blockIndex); ok &&
+			blockOffset <= len(blockBuf) {
+
 			n := copy(remaining, blockBuf[blockOffset:])
 			totalRead += n
 			remaining = remaining[n:]
+
 			lra.metrics.cacheHitBytes += uint64(n)
 
 			if totalRead == len(p) {
@@ -176,7 +216,7 @@ func (lra *LruReaderAt[T]) ReadAt(p []byte, offset int64) (int, error) {
 				blockIndex == lra.eofIndex &&
 				n == len(blockBuf)-blockOffset {
 
-				return readAtResult(len(p), totalRead, io.EOF)
+				return totalRead, io.EOF
 			}
 
 			blockIndex++
@@ -189,17 +229,23 @@ func (lra *LruReaderAt[T]) ReadAt(p []byte, offset int64) (int, error) {
 		var direct bool
 
 		if blockOffset == 0 && int64(len(remaining)) >= twoBlocks {
+
 			count := lra.countBlocksBeforeCacheHit(len(remaining), blockIndex+1)
+
 			if count > 1 {
 				readBuf = remaining[:count*lra.blockSize]
 				direct = true
 			}
 		}
-		if readBuf == nil {
+		if !direct {
 			readBuf = lra.getBuffer()
 		}
 
 		nRead, err := lra.reader.ReadAt(readBuf, blockStart)
+
+		if err == nil && len(readBuf) != nRead {
+			err = ErrShortRead
+		}
 
 		if debug {
 			println(
@@ -216,7 +262,7 @@ func (lra *LruReaderAt[T]) ReadAt(p []byte, offset int64) (int, error) {
 		if nRead <= blockOffset {
 			if direct || nRead <= 0 {
 				totalRead += nRead
-				return readAtResult(len(p), totalRead, err)
+				return totalRead, err
 			}
 
 			if err == io.EOF {
@@ -227,7 +273,7 @@ func (lra *LruReaderAt[T]) ReadAt(p []byte, offset int64) (int, error) {
 				lra.putBuffer(readBuf)
 			}
 
-			return readAtResult(len(p), totalRead, err)
+			return totalRead, err
 		}
 
 		if direct {
@@ -235,6 +281,8 @@ func (lra *LruReaderAt[T]) ReadAt(p []byte, offset int64) (int, error) {
 			remaining = remaining[nRead:]
 
 			for nRead > lra.blockSize {
+				lra.removeIfFull()
+
 				blockBuf := lra.getBuffer()
 
 				copy(blockBuf, readBuf[:lra.blockSize])
@@ -250,6 +298,8 @@ func (lra *LruReaderAt[T]) ReadAt(p []byte, offset int64) (int, error) {
 
 			if nRead > 0 {
 				if nRead == lra.blockSize || err == io.EOF {
+					lra.removeIfFull()
+
 					blockBuf := lra.getBuffer()
 
 					n := copy(blockBuf, readBuf[:nRead])
@@ -284,7 +334,7 @@ func (lra *LruReaderAt[T]) ReadAt(p []byte, offset int64) (int, error) {
 		}
 
 		if err != nil || nRead == 0 || len(remaining) == 0 {
-			return readAtResult(len(p), totalRead, err)
+			return totalRead, err
 		}
 
 		blockIndex++
@@ -292,7 +342,7 @@ func (lra *LruReaderAt[T]) ReadAt(p []byte, offset int64) (int, error) {
 		blockStart += int64(lra.blockSize)
 	}
 
-	return readAtResult(len(p), totalRead, nil)
+	return totalRead, nil
 }
 
 func (lra *LruReaderAt[T]) countBlocksBeforeCacheHit(bufSize int, nextIndex uint64) int {
@@ -301,6 +351,7 @@ func (lra *LruReaderAt[T]) countBlocksBeforeCacheHit(bufSize int, nextIndex uint
 		if lra.cache.Contains(nextIndex) {
 			break
 		}
+
 		bufSize -= lra.blockSize
 		if bufSize < 0 {
 			break
@@ -332,6 +383,13 @@ func (lra *LruReaderAt[T]) Metrics() LruReaderAtMetrics {
 		CacheMisses:     lruMetrics.Misses,
 		CacheHitBytes:   lra.metrics.cacheHitBytes,
 		PoolAllocs:      lra.metrics.poolAllocs,
+		CachedCount:     uint64(lra.cache.Len()),
+	}
+}
+
+func (lra *LruReaderAt[T]) removeIfFull() {
+	if lra.cache.Len() >= lra.cacheSize {
+		lra.cache.RemoveOldest()
 	}
 }
 
@@ -344,17 +402,6 @@ func (lra *LruReaderAt[T]) putBuffer(b []byte) {
 	if cap(b) == lra.blockSize {
 		lra.pool.Put(&b)
 	}
-}
-
-func readAtResult(expectedRead, totalRead int, err error) (int, error) {
-	if expectedRead != totalRead {
-		if err == nil {
-			err = ErrShortRead
-		}
-	} else if err == io.EOF {
-		err = nil
-	}
-	return totalRead, err
 }
 
 func lruHash(key uint64) uint32 {
