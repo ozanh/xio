@@ -11,7 +11,10 @@ import (
 	"github.com/elastic/go-freelru"
 )
 
-var errNegativeReadAt = errors.New("xio: reader at returned negative count")
+var (
+	errNegativeReadAt = errors.New("xio: reader at returned negative count")
+	errShortRead      = errors.New("xio: short read")
+)
 
 // LruReaderAt wraps an io.ReaderAt and caches its data in an LRU cache.
 // It is designed for reading random offsets efficiently, making it suitable
@@ -22,6 +25,8 @@ var errNegativeReadAt = errors.New("xio: reader at returned negative count")
 //
 // It is safe for concurrent use, but method calls are synchronized with a
 // mutex.
+//
+// See ReadAt method for the read semantics.
 type LruReaderAt[T io.ReaderAt] struct {
 	reader    T
 	cache     *freelru.LRU[uint64, []byte]
@@ -142,12 +147,13 @@ func (lra *LruReaderAt[T]) purge() {
 // If a cached block doesn’t fully satisfy the request, it reads the remainder
 // from the underlying reader.
 //
-// It returns ErrShortRead if the read operation could not read the requested
-// number of bytes and the underlying reader did not return io.EOF or other
-// error.
-//
 // If number of read bytes is equal to the len(p), it always returns nil error
 // if EOF was reached.
+//
+// If the underlying reader does not implement the io.ReaderAt interface
+// correctly and error is nil when n < len(p) , it does not cache the read
+// bytes that are less than the block size, and returns without reading the
+// remaining bytes.
 func (lra *LruReaderAt[T]) ReadAt(p []byte, offset int64) (n int, err error) {
 	if offset < 0 {
 		return 0, errors.New("xio: LruReaderAt: negative offset")
@@ -162,6 +168,10 @@ func (lra *LruReaderAt[T]) ReadAt(p []byte, offset int64) (n int, err error) {
 	n, err = lra.readAt(p, offset)
 
 	if len(p) == n && err == io.EOF {
+		err = nil
+	} else if err != nil && err == errShortRead {
+		// If underlying io.ReaderAt does not implement the interface correctly,
+		// it is not our responsibility, so we ignore the error.
 		err = nil
 	}
 
@@ -244,7 +254,7 @@ func (lra *LruReaderAt[T]) readAt(p []byte, offset int64) (int, error) {
 		nRead, err := lra.reader.ReadAt(readBuf, blockStart)
 
 		if err == nil && len(readBuf) != nRead {
-			err = ErrShortRead
+			err = errShortRead
 		}
 
 		if debug {
