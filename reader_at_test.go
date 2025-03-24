@@ -565,7 +565,7 @@ func TestLruReaderAt_caching(t *testing.T) {
 		require.NotZero(t, m)
 	})
 
-	t.Run("short read", func(t *testing.T) {
+	t.Run("no error if short read", func(t *testing.T) {
 		r := &shortReaderAt{}
 
 		lra, err := xio.NewLruReaderAt(r, 10, 2)
@@ -573,7 +573,7 @@ func TestLruReaderAt_caching(t *testing.T) {
 
 		buf := make([]byte, 1000)
 		n, err := lra.ReadAt(buf, 0)
-		require.Equal(t, xio.ErrShortRead, err)
+		require.Nil(t, err)
 		require.Equal(t, 999, n)
 	})
 }
