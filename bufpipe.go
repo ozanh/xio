@@ -183,13 +183,8 @@ func BufPipe(blockSize int, storageSize int64, storage Storage) (*BufPipeReader,
 	}
 
 	bp := &bufPipe{
-		stor: storage,
-		queue: &blockQueue{
-			readSignal:  make(chan struct{}, 1),
-			writeSignal: make(chan struct{}, 1),
-			writable:    newSegmentedSlice[int64](16),
-			readable:    newSegmentedSlice[aBlock](16),
-		},
+		stor:        storage,
+		queue:       newDefaultBlockQueue(),
 		sbuf:        newSectionBuf(int(blockSize), storage),
 		doneChan:    make(chan struct{}),
 		storageSize: storageSize,
@@ -274,7 +269,7 @@ func (bp *bufPipe) slowRead(p []byte) (int, error) {
 func (bp *bufPipe) getReadable() (aBlock, error) {
 
 	for {
-		block, ok := bp.queue.popReadable()
+		block, ok := bp.queue.PopReadable()
 		if ok {
 			return block, nil
 		}
@@ -288,7 +283,7 @@ func (bp *bufPipe) getReadable() (aBlock, error) {
 }
 
 func (bp *bufPipe) enqueueWritable(offset int64) {
-	bp.queue.pushWritable(offset)
+	bp.queue.PushWritable(offset)
 	if debug {
 		println("enqueued read block:", offset)
 	}
@@ -365,10 +360,10 @@ func (bp *bufPipe) flushBlock() error {
 		println("send block:", bp.wrblock.startOffset, "written:", bp.wrblock.written)
 	}
 
-	bp.queue.pushReadable(bp.wrblock)
+	bp.queue.PushReadable(bp.wrblock)
 
 	for {
-		offset, ok := bp.queue.popWritable()
+		offset, ok := bp.queue.PopWritable()
 		if ok {
 			bp.wrblock = aBlock{startOffset: offset}
 			if debug {
@@ -416,12 +411,9 @@ func (bp *bufPipe) closeWrite(err error) error {
 	bp.wmu.Lock()
 	defer bp.wmu.Unlock()
 
-	bp.queue.pushReadable(bp.wrblock)
+	defer bp.queue.CloseRead()
 
-	// Empty block to signal the end of writing, EOF.
-	if bp.wrblock != (aBlock{}) {
-		bp.queue.pushReadable(aBlock{})
-	}
+	bp.queue.PushReadable(bp.wrblock)
 	return nil
 }
 
@@ -542,23 +534,35 @@ type blockQueue struct {
 	mu          sync.Mutex
 	writable    *segmentedSlice[int64]
 	readable    *segmentedSlice[aBlock]
+	readClosed  bool
 }
 
-func (b *blockQueue) popReadable() (aBlock, bool) {
+func newDefaultBlockQueue() *blockQueue {
+	return &blockQueue{
+		readSignal:  make(chan struct{}, 1),
+		writeSignal: make(chan struct{}, 1),
+		writable:    newSegmentedSlice[int64](16),
+		readable:    newSegmentedSlice[aBlock](16),
+	}
+}
+
+func (b *blockQueue) PopReadable() (aBlock, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	return b.readable.popFirst()
+	block, ok := b.readable.popFirst()
+	ok = ok || b.readClosed
+	return block, ok
 }
 
-func (b *blockQueue) popWritable() (int64, bool) {
+func (b *blockQueue) PopWritable() (int64, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
 	return b.writable.popFirst()
 }
 
-func (b *blockQueue) pushWritable(offset int64) {
+func (b *blockQueue) PushWritable(offset int64) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -570,15 +574,29 @@ func (b *blockQueue) pushWritable(offset int64) {
 	}
 }
 
-func (b *blockQueue) pushReadable(block aBlock) {
+func (b *blockQueue) PushReadable(block aBlock) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+
+	if b.readClosed {
+		return
+	}
 
 	b.readable.append(block)
 
 	select {
 	case b.readSignal <- struct{}{}:
 	default:
+	}
+}
+
+func (b *blockQueue) CloseRead() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if !b.readClosed {
+		b.readClosed = true
+		close(b.readSignal)
 	}
 }
 
